@@ -189,6 +189,7 @@ import {
   exchangeClientCredentials,
   isPermanentTokenRejection,
   isUnusableSuccessTokenResponse,
+  parseClientAuthMethod,
   shouldRefreshToken,
   type OAuth2TokenResponse,
   type OAuthEndpointUrlPolicy,
@@ -2511,6 +2512,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             tokenUrl: String(stored.token_url),
             grant: String(stored.grant),
             resource: stored.resource ? String(stored.resource) : null,
+            tokenEndpointAuthMethod: parseClientAuthMethod(stored.token_endpoint_auth_method),
           } satisfies RefreshClient;
         });
         if (!clientRow) {
@@ -2530,6 +2532,12 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
         // recorded at connect time (multi-site providers like Datadog), else
         // the oauth_client's configured token endpoint.
         const tokenUrl = row.oauth_token_url ? String(row.oauth_token_url) : clientRow.tokenUrl;
+
+        // How this app authenticates to the token endpoint ("body" | "basic").
+        // Null on old rows resolves to "body" (client_secret_post). Threaded
+        // into both the client_credentials re-mint and the refresh_token call so
+        // Basic-only providers keep working across refreshes.
+        const clientAuth = clientRow.tokenEndpointAuthMethod;
 
         // Enterprise-managed authorization (the ID-JAG grant profile) issues NO
         // refresh token by design — the identity assertion in `refresh_item_id`
@@ -2567,6 +2575,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                 clientSecret,
                 scopes: grantedScopes,
                 resource: clientRow.resource ?? undefined,
+                clientAuth,
                 endpointUrlPolicy: config.oauthEndpointUrlPolicy,
                 fetch: config.fetch,
               }).pipe(
@@ -2634,7 +2643,7 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
                   // RFC 8707: keep the re-minted token bound to the same resource
                   // (MCP servers require this on refresh).
                   resource: clientRow.resource ?? undefined,
-                  clientAuth: clientRow.tokenEndpointAuthMethod,
+                  clientAuth,
                   requestFormat: clientRow.tokenRequestFormat,
                   endpointUrlPolicy: config.oauthEndpointUrlPolicy,
                   fetch: config.fetch,
