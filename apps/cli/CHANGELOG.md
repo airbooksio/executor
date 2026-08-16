@@ -1,5 +1,25 @@
 # executor
 
+## 1.5.41
+
+### Patch Changes
+
+- [#1600](https://github.com/UsefulSoftwareCo/executor/pull/1600) [`1b5f931`](https://github.com/UsefulSoftwareCo/executor/commit/1b5f931d90b52fa9eca7b6f53359a117d757c7c1) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Add `integrations.remove` to the core tools so an agent can drop a catalog integration**
+
+  `integrations.list` advertises `canRemove` per integration, but nothing on the agent surface could act on it: removal existed only on the HTTP API and the web console, so an agent that could add an integration could never take one back out. Cleaning up a catalog meant clicking through the UI once per integration.
+
+  The core-tools plugin now contributes `integrations.remove`, taking the `slug` reported by `integrations.list` and cascading to every connection under the integration and the tools those produced. It is approval-gated, being strictly more destructive than `connections.remove`. The `removed` flag is honest rather than always-true: `false` means no catalog row matched, so an already-absent slug and a built-in namespace like `executor` are distinguishable from a real removal, and an integration pinned with `canRemove: false` is refused with `IntegrationRemovalNotAllowedError` instead of silently surviving.
+
+- [#1556](https://github.com/UsefulSoftwareCo/executor/pull/1556) [`f674fb8`](https://github.com/UsefulSoftwareCo/executor/commit/f674fb80eebd597f922edd5ec21b8035ab195a78) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - **Fix: native MCP elicitation now reaches clients on the local HTTP endpoint instead of timing out**
+
+  The local daemon's Streamable HTTP transport ran with `enableJsonResponse: true`, which buffers a `tools/call` into a single JSON body and leaves no open stream for the server to write on. A server-to-client `elicitation/create` raised during that call was therefore never delivered, and approval-gated tools failed with a `-32001` request timeout even though the session had negotiated `elicitation_mode=native` and the client's `elicitation.form` capability. The transport now uses the spec-default SSE streaming, so the reverse request rides the originating tool call's stream — matching the Cloudflare host's behaviour.
+
+- Updated dependencies [[`d572658`](https://github.com/UsefulSoftwareCo/executor/commit/d572658d74097917412256f10a3ea2e3974f44dd)]:
+  - @executor-js/sdk@1.5.41
+  - @executor-js/local@1.5.41
+  - @executor-js/api@1.4.61
+  - @executor-js/runtime-quickjs@1.5.41
+
 ## 1.5.40
 
 ### Patch Changes
