@@ -4,6 +4,9 @@
   "compatibility_date": "2025-04-01",
   "compatibility_flags": ["nodejs_compat"],
   "main": "src/worker.ts",
+  // Serve on the Terraform-governed hostname; the Access application in
+  // omega-network-infrastructure (executor/ root) gates this domain.
+  "routes": [{ "pattern": "executor.omega-markets.com", "custom_domain": true }],
   // Access configuration is set per installation after the first deploy.
   // Preserve those live bindings when this source config does not declare them.
   "keep_vars": true,
@@ -29,7 +32,7 @@
     {
       "binding": "DB",
       "database_name": "executor",
-      "database_id": "ae748ca1-032c-4427-a1a0-fe39db77d1a9",
+      "database_id": "ddc938f8-c295-4036-a588-8c28275e1856",
     },
   ],
   // Plugin blob seam backend: multi-MB values (resolved OpenAPI specs,
