@@ -46,7 +46,45 @@ origin    https://github.com/airbooksio/executor.git   (this fork)
 upstream  https://github.com/UsefulSoftwareCo/executor.git
 ```
 
-## Upgrading the gateway
+## Deploying through RWX (preferred)
+
+`.rwx/deploy.yml` defines two lanes so deploys need no personal Cloudflare
+OAuth grant:
+
+- **`Executor / Verify`** — every PR: typecheck, unit tests, and a real build
+  of `apps/host-cloudflare`, with an assertion that the build produced a SPA.
+  No credentials.
+- **`Deploy the Executor gateway`** — an RWX **dispatch** on `main` with an
+  explicit `confirm` parameter. It builds, runs `wrangler deploy` with a
+  scoped Cloudflare API token fetched from Doppler over OIDC, then verifies
+  that `/mcp` still answers with an OAuth challenge and fails loudly if it
+  does not.
+
+Deploy is deliberately **not** automatic on push to `main`: our `main` tracks
+upstream, so an unattended deploy would ship upstream changes nobody reviewed.
+
+### One-time setup (manual, and not yet done)
+
+The lane is inert until these exist. Nothing here can be automated — each step
+is a console action or a credential issuance:
+
+1. **Connect `airbooksio/executor` to RWX** and point it at `.rwx/deploy.yml`.
+2. **Create the RWX vault `executor-deploy`**, locked to this repo, with a
+   Doppler OIDC provider and a var `DOPPLER_OIDC_IDENTITY_ID`.
+3. **Create the Doppler project `executor-gateway`, config `deploy`**, holding
+   `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, plus a Doppler OIDC
+   identity trusted by that vault.
+4. **Issue the Cloudflare API token** — account-scoped, minimum viable set:
+   Workers Scripts **Edit**, Workers Routes **Edit** (the custom domain), D1
+   **Read**, Workers R2 Storage **Read**, Account Settings **Read**. It needs
+   no Access, DNS, WAF, or account-membership authority. Per the governance
+   repo's ownership of Cloudflare token policy, declare its permission scope
+   in `omega-cloud-governance` (`stacks/cloudflare-access`) alongside the
+   existing network tokens; issuance and secret storage stay manual.
+
+Until then, deploy from a laptop with the fallback below.
+
+## Upgrading the gateway (laptop fallback)
 
 The full runbook — including what Terraform owns, the Access model, and the
 integration catalog — lives in `docs/executor.md` of
