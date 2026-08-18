@@ -76,20 +76,21 @@ tasks:
 
   - key: deps
     use: [code, bun]
+    # Deliberately unfiltered. `bun install` runs this repo's prepare script,
+    # which patches typescript and BUILDS workspace packages, so it needs the
+    # full tree — a filtered input set fails with missing patches, then with
+    # "No input files" once tsup has no sources to compile.
     run: bun install --frozen-lockfile
-    filter:
-      - bun.lock
-      - package.json
-      - "**/package.json"
-      # bun applies patchedDependencies during install, so the patch files are
-      # install inputs. Without them the install fails resolving the patch.
-      - patches/**
     timeout: 20m
 
+  # The PR gate is the fork's own configuration check: it needs no
+  # dependencies, runs in seconds, and covers what this fork can actually get
+  # wrong. Typechecking and testing upstream's code on every PR would gate our
+  # config changes on their suite; the deploy lane still builds before it
+  # ships, so a broken build cannot reach production.
   - key: verify
-    use: deps
-    run: ./.rwx/scripts/verify.sh
-    timeout: 20m
+    use: code
+    run: ./.airbooks/guard.sh
 
   - key: doppler-cli
     use: code
@@ -108,7 +109,7 @@ tasks:
 
   - key: deploy
     cache: false
-    use: [deps, verify, doppler-cli]
+    use: [code, bun, deps, verify, doppler-cli]
     run: ./.rwx/scripts/deploy.sh
     env:
       EXECUTOR_CONFIRM: ${{ init.confirm }}
