@@ -71,6 +71,13 @@ cd apps/host-cloudflare
 printf '==> build\n'
 bun run build
 
+# A deploy whose SPA did not build would serve a gateway with a 404 console
+# while /mcp still answers — a confusing half-broken state to debug live.
+if [[ ! -s dist/index.html ]]; then
+  printf 'build produced no dist/index.html\n' >&2
+  exit 78
+fi
+
 printf '==> deploy\n'
 bunx wrangler deploy
 
