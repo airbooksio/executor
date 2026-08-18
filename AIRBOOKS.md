@@ -41,10 +41,23 @@ bunx wrangler deployments list   # what Cloudflare is actually serving
 
 ## Branch protection
 
-`main` requires a pull request, blocks force pushes and deletions, dismisses
-stale reviews, and requires conversation resolution. Approvals are set to zero
-so a single maintainer is not deadlocked; raise that once there is a second
-reviewer. Administrators are not yet included in the restrictions.
+`main` is governed by a repository **ruleset**, not classic branch protection —
+so the `/branches/main/protection` API returns 404 even though the branch is
+protected. Read the ruleset instead:
+
+```sh
+gh api repos/airbooksio/executor/rulesets
+```
+
+It requires a pull request with one approving review, dismisses stale reviews
+on push, requires review threads resolved, requires the `RWX: Executor / Verify`
+status check with a branch that is up to date, and blocks deletions and
+non-fast-forward pushes. Its bypass-actor list is empty, so the rules apply to
+administrators too — nobody can push to `main` directly.
+
+One consequence worth planning around: with one required approval and no
+bypass, a single maintainer cannot merge their own pull request, because
+GitHub does not allow self-approval.
 
 This changes how upstream is absorbed: `main` can no longer be force-pushed,
 so a rebase-and-force is out. Rebase onto upstream in a branch and open a PR:
