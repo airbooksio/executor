@@ -39,15 +39,10 @@ deploying, and update this section when you do.
 bunx wrangler deployments list   # what Cloudflare is actually serving
 ```
 
-## Branch protection
+## Absorbing upstream
 
-`main` requires a pull request, blocks force pushes and deletions, dismisses
-stale reviews, and requires conversation resolution. Approvals are set to zero
-so a single maintainer is not deadlocked; raise that once there is a second
-reviewer. Administrators are not yet included in the restrictions.
-
-This changes how upstream is absorbed: `main` can no longer be force-pushed,
-so a rebase-and-force is out. Rebase onto upstream in a branch and open a PR:
+`main` cannot be force-pushed, so a rebase-and-force is out. Rebase in a
+branch and open a pull request:
 
 ```sh
 git fetch upstream
@@ -56,18 +51,15 @@ git rebase upstream/main        # keep our wrangler.jsonc edits
 git push origin HEAD
 ```
 
-The gating check is RWX's `Executor / Verify`, which runs
-`.airbooks/guard.sh` first: it asserts the two edits this fork exists to carry
-— the custom-domain route and our D1 database id — plus that `keep_vars` stays
-on and the live Access variables are never committed. Any of those regressing
-would deploy cleanly and fail in production. It needs no dependencies, so it
-fails in seconds rather than after a full install and build.
+The gating check is `.airbooks/guard.sh`, which asserts the edits this fork
+exists to carry — the custom-domain route and our D1 database id — plus that
+`keep_vars` stays on and the live Access variables are never committed. Any of
+those regressing would deploy cleanly and fail in production.
 
-RWX is the only CI system for Airbooks repositories. Upstream's GitHub Actions
-workflows (`Deploy`, `Release`, the publish jobs) are **disabled** on this
-fork: they target upstream's own cloud deployment, so arming them here would
-let a push to our `main` act on their infrastructure. Do not add GitHub
-Actions workflows to this repository.
+Upstream's GitHub Actions workflows (`Deploy`, `Release`, the publish jobs) are
+disabled here. They target upstream's own cloud deployment, so arming them
+would let a push to our `main` act on their infrastructure. RWX is the CI
+system; do not add Actions workflows.
 
 ## Remotes
 
@@ -76,20 +68,19 @@ origin    https://github.com/airbooksio/executor.git   (this fork)
 upstream  https://github.com/UsefulSoftwareCo/executor.git
 ```
 
-## Upgrading the gateway
+## Deploying
 
-The full runbook — including what Terraform owns, the Access model, and the
-integration catalog — lives in `docs/executor.md` of
+The full runbook — what Terraform owns, the Access model, the integration
+catalog — lives in `docs/executor.md` of
 [`airbooksio/omega-network-infrastructure`](https://github.com/airbooksio/omega-network-infrastructure).
-Short version:
+
+Once the sync above is merged, deploy from `main`:
 
 ```sh
-git fetch upstream
-git rebase upstream/main            # resolve wrangler.jsonc conflicts in our favour
 bun install
 cd apps/host-cloudflare
 bunx wrangler login                 # one-click OAuth; only needed if logged out
-bunx wrangler vite build            # or: bunx vite build
+bunx vite build
 bunx wrangler deploy
 ```
 
@@ -107,9 +98,10 @@ The manual steps above are the supported path for this deployment.
 
 ## Boundaries
 
-- Cloudflare **infrastructure** (D1, R2, the Zero Trust Access application,
-  its policies, and the headless service token) is Terraform-owned in the
-  `executor/` root of `omega-network-infrastructure`. Never create those by
-  hand or with wrangler.
+- Cloudflare **infrastructure** (D1, R2, the Zero Trust Access application
+  and its policy) is Terraform-owned in the `executor/` root of
+  `omega-network-infrastructure`. Never create those by hand or with wrangler.
+  There is deliberately no shared service token: agents authenticate as their
+  own operator through Cloudflare Access.
 - **Integrations, connections, and tool policies** are runtime state in the
   Executor console and its D1 database — not in this repo, not in Terraform.
