@@ -50,4 +50,12 @@ grep -qE '"(ACCESS_AUD|ACCESS_TEAM_DOMAIN|ADMIN_EMAILS)"[[:space:]]*:' "$config"
 grep -qF '"keep_vars": true' "$config" \
   || fail "$config must keep keep_vars enabled or a deploy will drop the live Access variables"
 
+# We never run upstream's GitHub Actions: RWX is the CI system here. Carrying
+# the files means a push needs the workflows permission, and leaves nine
+# workflows one click away from acting on our infrastructure — including their
+# Deploy. An upstream sync must not quietly reintroduce them.
+if [[ -d .github/workflows ]]; then
+  fail 'this fork must not carry .github/workflows; a sync reintroduced upstream'"'"'s Actions'
+fi
+
 printf 'ok - airbooks fork configuration is intact\n'
