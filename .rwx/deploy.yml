@@ -3,12 +3,12 @@
 # Two lanes, deliberately separate:
 #   - verify  — runs on every PR: typecheck, unit tests, and a real build of
 #               the Cloudflare host. No credentials, no deploy.
-#   - deploy  — runs on a TAG push. Ships the built Worker to
+#   - deploy  — runs on every push to main. Ships the built Worker to
 #               executor.omega-markets.com with a scoped Cloudflare API token
 #               sourced from Doppler over OIDC.
 #
-# Nothing ships on a merge to main: our main tracks upstream, so that would
-# release every upstream change unreviewed. Tagging is the deliberate act.
+# Merging the PR is the deliberate act: main is protected, so code only lands
+# there through a reviewed pull request, upstream syncs included.
 #
 # Terraform still owns the durable Cloudflare resources (D1, R2, the Access
 # application and its policies) in the executor/ root of
@@ -20,16 +20,14 @@ on:
       commit-sha: ${{ event.git.sha }}
       confirm: "false"
   github:
-    # Deploy on a tag push. The deploy vault is LOCKED to this repository, and
-    # a locked vault is unreachable from a user-initiated run — a CLI or UI
-    # dispatch is attributed to a person, so it cannot read the credentials.
-    # A tag push is a repository event, so the vault opens for it without
-    # granting any human standing access to production secrets.
-    #
-    # Tagging stays deliberate: nothing ships on a merge to main.
+    # Deploy on merge to main. The deploy vault is LOCKED to this repository,
+    # and a locked vault is unreachable from a user-initiated run — a CLI or UI
+    # dispatch is attributed to a person, so it cannot read the credentials. A
+    # push is a repository event, so the vault opens for it without granting
+    # any human standing access to production secrets.
     push:
-      if: ${{ event.git.tag != '' }}
-      title: Deploy the Executor gateway for ${{ event.git.tag }}
+      if: ${{ event.git.branch == 'main' }}
+      title: Deploy the Executor gateway for ${{ event.git.sha }}
       target: deploy
       status-checks:
         default:
