@@ -68,7 +68,9 @@ tasks:
     use: code
     run: |
       curl -fsSL --retry 3 --proto '=https' --tlsv1.2 https://bun.sh/install | bash
-      printf 'PATH=%s/.bun/bin:$PATH\n' "$HOME" >>"$RWX_ENV"
+      # $RWX_ENV is a DIRECTORY: one file per variable, named for the variable.
+      # Appending KEY=value to it fails with "Is a directory".
+      printf '%s/.bun/bin:%s' "$HOME" "$PATH" >"$RWX_ENV/PATH"
     filter:
       - package.json
 
