@@ -81,6 +81,9 @@ tasks:
       - bun.lock
       - package.json
       - "**/package.json"
+      # bun applies patchedDependencies during install, so the patch files are
+      # install inputs. Without them the install fails resolving the patch.
+      - patches/**
     timeout: 20m
 
   - key: verify
