@@ -39,6 +39,36 @@ deploying, and update this section when you do.
 bunx wrangler deployments list   # what Cloudflare is actually serving
 ```
 
+## Branch protection
+
+`main` requires a pull request, blocks force pushes and deletions, dismisses
+stale reviews, and requires conversation resolution. Approvals are set to zero
+so a single maintainer is not deadlocked; raise that once there is a second
+reviewer. Administrators are not yet included in the restrictions.
+
+This changes how upstream is absorbed: `main` can no longer be force-pushed,
+so a rebase-and-force is out. Rebase onto upstream in a branch and open a PR:
+
+```sh
+git fetch upstream
+git checkout -b upstream-sync-$(date +%Y%m%d) origin/main
+git rebase upstream/main        # keep our wrangler.jsonc edits
+git push origin HEAD
+```
+
+The gating check is RWX's `Executor / Verify`, which runs
+`.airbooks/guard.sh` first: it asserts the two edits this fork exists to carry
+— the custom-domain route and our D1 database id — plus that `keep_vars` stays
+on and the live Access variables are never committed. Any of those regressing
+would deploy cleanly and fail in production. It needs no dependencies, so it
+fails in seconds rather than after a full install and build.
+
+RWX is the only CI system for Airbooks repositories. Upstream's GitHub Actions
+workflows (`Deploy`, `Release`, the publish jobs) are **disabled** on this
+fork: they target upstream's own cloud deployment, so arming them here would
+let a push to our `main` act on their infrastructure. Do not add GitHub
+Actions workflows to this repository.
+
 ## Remotes
 
 ```
@@ -46,45 +76,7 @@ origin    https://github.com/airbooksio/executor.git   (this fork)
 upstream  https://github.com/UsefulSoftwareCo/executor.git
 ```
 
-## Deploying through RWX (preferred)
-
-`.rwx/deploy.yml` defines two lanes so deploys need no personal Cloudflare
-OAuth grant:
-
-- **`Executor / Verify`** — every PR: typecheck, unit tests, and a real build
-  of `apps/host-cloudflare`, with an assertion that the build produced a SPA.
-  No credentials.
-- **`Deploy the Executor gateway`** — an RWX **dispatch** on `main` with an
-  explicit `confirm` parameter. It builds, runs `wrangler deploy` with a
-  scoped Cloudflare API token fetched from Doppler over OIDC, then verifies
-  that `/mcp` still answers with an OAuth challenge and fails loudly if it
-  does not.
-
-Deploy is deliberately **not** automatic on push to `main`: our `main` tracks
-upstream, so an unattended deploy would ship upstream changes nobody reviewed.
-
-### One-time setup (manual, and not yet done)
-
-The lane is inert until these exist. Nothing here can be automated — each step
-is a console action or a credential issuance:
-
-1. **Connect `airbooksio/executor` to RWX** and point it at `.rwx/deploy.yml`.
-2. **Create the RWX vault `executor-deploy`**, locked to this repo, with a
-   Doppler OIDC provider and a var `DOPPLER_OIDC_IDENTITY_ID`.
-3. **Create the Doppler project `executor-gateway`, config `deploy`**, holding
-   `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, plus a Doppler OIDC
-   identity trusted by that vault.
-4. **Issue the Cloudflare API token** — account-scoped, minimum viable set:
-   Workers Scripts **Edit**, Workers Routes **Edit** (the custom domain), D1
-   **Read**, Workers R2 Storage **Read**, Account Settings **Read**. It needs
-   no Access, DNS, WAF, or account-membership authority. Per the governance
-   repo's ownership of Cloudflare token policy, declare its permission scope
-   in `omega-cloud-governance` (`stacks/cloudflare-access`) alongside the
-   existing network tokens; issuance and secret storage stay manual.
-
-Until then, deploy from a laptop with the fallback below.
-
-## Upgrading the gateway (laptop fallback)
+## Upgrading the gateway
 
 The full runbook — including what Terraform owns, the Access model, and the
 integration catalog — lives in `docs/executor.md` of
