@@ -9,6 +9,12 @@ set -euo pipefail
 
 cd "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 
+# Cheapest check first, and the one most likely to catch a bad upstream sync:
+# the fork's own configuration. It needs no dependencies, so it fails in
+# seconds rather than after a full install and build.
+printf '==> fork configuration\n'
+./.airbooks/guard.sh
+
 bun install --frozen-lockfile >/dev/null
 
 cd apps/host-cloudflare
