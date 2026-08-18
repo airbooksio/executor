@@ -41,25 +41,25 @@ bunx wrangler deployments list   # what Cloudflare is actually serving
 
 ## Absorbing upstream
 
-`main` cannot be force-pushed, so a rebase-and-force is out. Rebase in a
-branch and open a pull request:
-
 ```sh
-git fetch upstream
-git checkout -b upstream-sync-$(date +%Y%m%d) origin/main
-git rebase upstream/main        # keep our wrangler.jsonc edits
-git push origin HEAD
+.airbooks/sync-upstream.sh      # rebases onto upstream/main in a branch
+git push origin HEAD            # then open a PR
 ```
+
+`main` cannot be force-pushed, so the sync lands as a pull request.
 
 The gating check is `.airbooks/guard.sh`, which asserts the edits this fork
 exists to carry — the custom-domain route and our D1 database id — plus that
 `keep_vars` stays on and the live Access variables are never committed. Any of
 those regressing would deploy cleanly and fail in production.
 
-Upstream's GitHub Actions workflows (`Deploy`, `Release`, the publish jobs) are
-disabled here. They target upstream's own cloud deployment, so arming them
-would let a push to our `main` act on their infrastructure. RWX is the CI
-system; do not add Actions workflows.
+**This fork does not carry `.github/workflows`.** RWX is the CI system; we
+never run upstream's Actions, and their `Deploy` targets upstream's own
+infrastructure. Carrying the files also made every sync require the GitHub
+App's `workflows` permission, which is org-wide — granting it would let agents
+add Actions workflows to any Airbooks repo. `sync-upstream.sh` deletes them
+again and resolves the modify/delete conflicts that causes when upstream edits
+one; the guard fails if any reappear.
 
 ## Remotes
 

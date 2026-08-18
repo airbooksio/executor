@@ -53,6 +53,23 @@ declare global {
       // number to drive the backstop. Production leaves it unset.
       EXECUTION_RATE_LIMIT_PER_HOUR?: string;
 
+      // First-party OAuth apps (executor-owned provider registrations). Each
+      // pair enables one-click connect through `first-party:<provider>`; an
+      // unset pair simply ships no first-party app for that provider. The
+      // registered callback on the provider side must be
+      // `${VITE_PUBLIC_SITE_URL}/api/oauth/callback`.
+      FIRST_PARTY_GITHUB_CLIENT_ID?: string;
+      FIRST_PARTY_GITHUB_CLIENT_SECRET?: string;
+      // Endpoint overrides for the GitHub first-party app, so tests/dev can
+      // point it at an emulated provider and complete the whole flow. Unset in
+      // production (the real github.com endpoints are the defaults).
+      FIRST_PARTY_GITHUB_AUTHORIZE_URL?: string;
+      FIRST_PARTY_GITHUB_TOKEN_URL?: string;
+      FIRST_PARTY_GOOGLE_CLIENT_ID?: string;
+      FIRST_PARTY_GOOGLE_CLIENT_SECRET?: string;
+      FIRST_PARTY_SLACK_CLIENT_ID?: string;
+      FIRST_PARTY_SLACK_CLIENT_SECRET?: string;
+
       // Billing
       AUTUMN_SECRET_KEY?: string;
       /** Optional Autumn base-URL override (Autumn emulator in tests/dev). */
@@ -67,6 +84,10 @@ declare global {
       MCP_RESOURCE_ORIGIN?: string;
       MCP_SESSION_TIMEOUT_MS?: string;
       MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS?: string;
+      /** HMAC key for MCP 2026-07-28 continuation state (32+ byte secret). */
+      MCP_REQUEST_STATE_KEY?: string;
+      /** Emergency rollback for inbound MCP 2026-07-28 traffic only. */
+      MCP_2026_07_28_ENABLED?: string;
       NODE_ENV?: string;
 
       // Shared with frontend

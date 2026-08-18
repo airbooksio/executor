@@ -75,7 +75,7 @@ import type { PlatformError } from "effect/PlatformError";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Cause from "effect/Cause";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 
@@ -215,9 +215,11 @@ const waitForShutdownSignal = () =>
     const shutdown = () => resume(Effect.void);
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
+    process.once("SIGHUP", shutdown);
     return Effect.sync(() => {
       process.off("SIGINT", shutdown);
       process.off("SIGTERM", shutdown);
+      process.off("SIGHUP", shutdown);
     });
   });
 

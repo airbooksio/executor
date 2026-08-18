@@ -9,7 +9,7 @@ import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { bootProcesses, waitForHttp, type BootedProcesses } from "./boot";
+import { bootProcesses, waitForBoot, waitForHttp, type BootedProcesses } from "./boot";
 
 export const cloudflareDir = fileURLToPath(new URL("../../apps/host-cloudflare/", import.meta.url));
 const wranglerBin = fileURLToPath(
@@ -48,6 +48,8 @@ export const bootCloudflare = async (options: CloudflareBootOptions): Promise<Bo
           "--var",
           "EXECUTOR_SECRET_KEY:e2e-secret-key-0123456789abcdef0123456789abcdef",
           "--var",
+          "MCP_REQUEST_STATE_KEY:e2e-mcp-request-state-key-0123456789abcdef",
+          "--var",
           "ALLOW_LOCAL_NETWORK:true",
         ],
         cwd: cloudflareDir,
@@ -61,7 +63,12 @@ export const bootCloudflare = async (options: CloudflareBootOptions): Promise<Bo
   try {
     // dev-auth: /api/account/me answers 200 as the dev admin once the worker is
     // up (workerd boot + esbuild + D1 schema bring-up take a beat on first run).
-    await waitForHttp(`http://127.0.0.1:${options.port}/api/account/me`, { timeoutMs: 120_000 });
+    await waitForBoot(procs, (signal) =>
+      waitForHttp(`http://127.0.0.1:${options.port}/api/account/me`, {
+        timeoutMs: 120_000,
+        signal,
+      }),
+    );
   } catch (error) {
     await procs.teardown();
     throw error;

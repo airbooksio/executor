@@ -32,6 +32,8 @@ export interface SelfHostConfig {
    * internal network unless an operator opts in.
    */
   readonly allowLocalNetwork: boolean;
+  /** Emergency rollback for inbound MCP 2026-07-28 traffic only. */
+  readonly mcp20260728Enabled: boolean;
   // Better Auth session secret. Always resolved (env, else generated + persisted
   // under the data dir) so a single-container deploy boots with no env; the auth
   // layer still validates an explicitly-set env secret is long enough.
@@ -43,6 +45,14 @@ export interface SelfHostConfig {
   readonly organizationName: string;
   /** URL slug for org-prefixed console paths (`/<slug>/policies`). */
   readonly orgSlug: string;
+  /**
+   * Sandbox execution budget passed to the QuickJS runtime, or undefined for
+   * the runtime's own default (5 minutes). An operator knob in principle, but
+   * its real consumer is the e2e harness, which shrinks it to seconds so the
+   * sandbox-deadline scenario proves its race without waiting out real
+   * minutes (the same pattern as MCP_PAUSED_SESSION_IDLE_TIMEOUT_MS on cloud).
+   */
+  readonly sandboxTimeoutMs: number | undefined;
 }
 
 export const resolveDataDir = (): string =>
@@ -142,13 +152,31 @@ export const loadConfig = (): SelfHostConfig => {
     dbPath: process.env.EXECUTOR_DB_PATH ?? join(dataDir, "data.db"),
     webBaseUrl: resolveWebBaseUrl(port),
     allowLocalNetwork: process.env.EXECUTOR_ALLOW_LOCAL_NETWORK === "true",
+    mcp20260728Enabled: process.env.MCP_2026_07_28_ENABLED !== "false",
     authSecret: resolveAuthSecret(),
     bootstrapAdminEmail: process.env.EXECUTOR_BOOTSTRAP_ADMIN_EMAIL,
     bootstrapAdminPassword: process.env.EXECUTOR_BOOTSTRAP_ADMIN_PASSWORD,
     bootstrapAdminName: process.env.EXECUTOR_BOOTSTRAP_ADMIN_NAME ?? "Admin",
     organizationName: process.env.EXECUTOR_ORG_NAME ?? "Default",
     orgSlug: resolveOrgSlug(),
+    sandboxTimeoutMs: resolveSandboxTimeoutMs(),
   };
+};
+
+// A malformed value is refused rather than silently ignored: an operator who
+// sets the knob and typos it should find out at boot, not by watching a
+// runaway execution use the 5-minute default.
+const resolveSandboxTimeoutMs = (): number | undefined => {
+  const raw = process.env.EXECUTOR_SANDBOX_TIMEOUT_MS;
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: refuse to boot on a malformed operator knob
+    throw new Error(
+      `EXECUTOR_SANDBOX_TIMEOUT_MS ${JSON.stringify(raw)} is not a positive number of milliseconds`,
+    );
+  }
+  return Math.floor(parsed);
 };
 
 // The org slug doubles as a URL segment (`/<slug>/policies`), so an

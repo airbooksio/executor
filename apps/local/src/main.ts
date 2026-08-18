@@ -119,6 +119,7 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
         localAnalytics.record(`artifact_${action}`, { via: "agent" }),
     };
     mcp = createMcpRequestHandler({
+      modernEnabled: process.env.MCP_2026_07_28_ENABLED !== "false",
       defaultConfig: {
         engine,
         artifacts: executor.artifacts,
@@ -136,8 +137,13 @@ export const createServerHandlers = async (token: string): Promise<ServerHandler
             },
           };
         }
+        // Borrow the running server's DB handle: this process already holds the
+        // data dir's exclusive ownership lock, so opening it a second time here
+        // fails against ourselves. The toolkit executor differs only in its
+        // plugin set, and the borrowed handle stays open when it disposes.
         const handle = await createExecutorHandle({
           activeToolkitSlug: resource.slug,
+          borrowedDb: (await getExecutorBundle()).db,
         });
         const toolkitEngine = withExecutionAnalytics(
           createExecutionEngine({
