@@ -39,6 +39,36 @@ deploying, and update this section when you do.
 bunx wrangler deployments list   # what Cloudflare is actually serving
 ```
 
+## Branch protection
+
+`main` requires a pull request, blocks force pushes and deletions, dismisses
+stale reviews, and requires conversation resolution. Approvals are set to zero
+so a single maintainer is not deadlocked; raise that once there is a second
+reviewer. Administrators are not yet included in the restrictions.
+
+This changes how upstream is absorbed: `main` can no longer be force-pushed,
+so a rebase-and-force is out. Rebase onto upstream in a branch and open a PR:
+
+```sh
+git fetch upstream
+git checkout -b upstream-sync-$(date +%Y%m%d) origin/main
+git rebase upstream/main        # keep our wrangler.jsonc edits
+git push origin HEAD
+```
+
+The gating check is RWX's `Executor / Verify`, which runs
+`.airbooks/guard.sh` first: it asserts the two edits this fork exists to carry
+— the custom-domain route and our D1 database id — plus that `keep_vars` stays
+on and the live Access variables are never committed. Any of those regressing
+would deploy cleanly and fail in production. It needs no dependencies, so it
+fails in seconds rather than after a full install and build.
+
+RWX is the only CI system for Airbooks repositories. Upstream's GitHub Actions
+workflows (`Deploy`, `Release`, the publish jobs) are **disabled** on this
+fork: they target upstream's own cloud deployment, so arming them here would
+let a push to our `main` act on their infrastructure. Do not add GitHub
+Actions workflows to this repository.
+
 ## Remotes
 
 ```

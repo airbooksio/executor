@@ -1,0 +1,123 @@
+# Executor gateway CI/CD for airbooksio/executor.
+#
+# Two lanes, deliberately separate:
+#   - verify  — runs on every PR: typecheck, unit tests, and a real build of
+#               the Cloudflare host. No credentials, no deploy.
+#   - deploy  — dispatch-only, main-only, explicit `confirm`. Ships the built
+#               Worker to executor.omega-markets.com with a scoped Cloudflare
+#               API token sourced from Doppler over OIDC.
+#
+# Deploy is NOT automatic on push to main. Our main tracks upstream, so a
+# rebase would otherwise ship every upstream change unreviewed; shipping is an
+# explicit human decision (see AIRBOOKS.md).
+#
+# Terraform still owns the durable Cloudflare resources (D1, R2, the Access
+# application and its policies) in the executor/ root of
+# omega-network-infrastructure. This lane only publishes Worker code.
+
+on:
+  cli:
+    init:
+      commit-sha: ${{ event.git.sha }}
+      confirm: "false"
+  dispatch:
+    - key: executor-deploy
+      title: Deploy the Executor gateway
+      target: deploy
+      if: ${{ event.git.branch == 'main' }}
+      params:
+        - key: confirm
+          name: Confirm gateway deploy
+          description: >-
+            Type true to build this main commit and deploy it to
+            executor.omega-markets.com. Review upstream changes first.
+      init:
+        commit-sha: ${{ event.git.sha }}
+        confirm: ${{ event.dispatch.params.confirm }}
+  github:
+    pull_request:
+      title: Executor gateway checks for ${{ event.git.sha }}
+      target: verify
+      status-checks:
+        default:
+          name: Executor / Verify
+      init:
+        commit-sha: ${{ event.git.sha }}
+        confirm: "false"
+
+concurrency-pools:
+  - id: airbooksio/executor:deploy
+    capacity: 1
+    on-overflow: cancel-waiting
+
+base:
+  image: ubuntu:24.04
+  config: rwx/base 1.1.1
+
+tasks:
+  - key: code
+    call: git/clone 2.0.8
+    with:
+      repository: https://github.com/airbooksio/executor.git
+      ref: ${{ init.commit-sha }}
+      # No github-token: this fork is public, so the clone needs no
+      # credential. The `github` context is not available to these tasks
+      # anyway — referencing it fails the run before anything executes.
+
+  - key: bun
+    use: code
+    run: |
+      curl -fsSL --retry 3 --proto '=https' --tlsv1.2 https://bun.sh/install | bash
+      # $RWX_ENV is a DIRECTORY: one file per variable, named for the variable.
+      # Appending KEY=value to it fails with "Is a directory".
+      printf '%s/.bun/bin:%s' "$HOME" "$PATH" >"$RWX_ENV/PATH"
+    filter:
+      - package.json
+
+  - key: deps
+    use: [code, bun]
+    # Deliberately unfiltered. `bun install` runs this repo's prepare script,
+    # which patches typescript and BUILDS workspace packages, so it needs the
+    # full tree — a filtered input set fails with missing patches, then with
+    # "No input files" once tsup has no sources to compile.
+    run: bun install --frozen-lockfile
+    timeout: 20m
+
+  # The PR gate is the fork's own configuration check: it needs no
+  # dependencies, runs in seconds, and covers what this fork can actually get
+  # wrong. Typechecking and testing upstream's code on every PR would gate our
+  # config changes on their suite; the deploy lane still builds before it
+  # ships, so a broken build cannot reach production.
+  - key: verify
+    use: code
+    run: ./.airbooks/guard.sh
+
+  - key: doppler-cli
+    use: code
+    run: |
+      curl -sLf --retry 3 --tlsv1.2 --proto '=https' \
+        'https://packages.doppler.com/public/cli/gpg.DE2A7741A397C129.key' |
+        gpg --dearmor |
+        sudo tee /usr/share/keyrings/doppler-archive-keyring.gpg >/dev/null
+      echo 'deb [signed-by=/usr/share/keyrings/doppler-archive-keyring.gpg] https://packages.doppler.com/public/cli/deb/debian any-version main' |
+        sudo tee /etc/apt/sources.list.d/doppler-cli.list >/dev/null
+      sudo apt-get update
+      sudo DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends --assume-yes doppler
+    filter:
+      - .rwx/deploy.yml
+    timeout: 10m
+
+  - key: deploy
+    cache: false
+    use: [code, bun, deps, verify, doppler-cli]
+    run: ./.rwx/scripts/deploy.sh
+    env:
+      EXECUTOR_CONFIRM: ${{ init.confirm }}
+      EXECUTOR_HOSTNAME: executor.omega-markets.com
+      EXECUTOR_DOPPLER_PROJECT: executor-gateway
+      EXECUTOR_DOPPLER_CONFIG: deploy
+      RWX_DOPPLER_OIDC_TOKEN:
+        value: ${{ vaults.executor-deploy.oidc.Doppler }}
+        cache-key: excluded
+      DOPPLER_OIDC_IDENTITY_ID: ${{ vaults.executor-deploy.vars.DOPPLER_OIDC_IDENTITY_ID }}
+    timeout: 20m
