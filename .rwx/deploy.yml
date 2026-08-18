@@ -60,7 +60,9 @@ tasks:
     with:
       repository: https://github.com/airbooksio/executor.git
       ref: ${{ init.commit-sha }}
-      github-token: ${{ github.token }}
+      # No github-token: this fork is public, so the clone needs no
+      # credential. The `github` context is not available to these tasks
+      # anyway — referencing it fails the run before anything executes.
 
   - key: bun
     use: code
