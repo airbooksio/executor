@@ -88,8 +88,38 @@ if [[ ! -s dist/index.html ]]; then
 fi
 
 printf '==> deploy\n'
-bunx wrangler deploy
 
+# Capture wrangler's output rather than letting it stream to the task log,
+# because we have to assert on it.
+#
+# On 2026-08-19 (run 00c91798) `wrangler deploy` printed its banner, exited 0
+# after 1.3 seconds, uploaded nothing, and the run went green — Cloudflare
+# recorded no new version at all. A zero exit does not prove a deploy happened,
+# so require wrangler's own report of the version it published. Debug logging
+# is on so that a silent no-op is diagnosable from the failure output instead
+# of needing another round trip.
+deploy_out="$(mktemp)"
+set +e
+WRANGLER_LOG=debug bunx wrangler deploy >"$deploy_out" 2>&1
+wrangler_status=$?
+set -e
+
+version_id="$(sed -n 's/.*Current Version ID:[[:space:]]*\([0-9a-f-]\{36\}\).*/\1/p' "$deploy_out" | tail -n1)"
+
+if [[ "$wrangler_status" -ne 0 || -z "$version_id" ]]; then
+  printf '==> wrangler deploy output\n' >&2
+  cat "$deploy_out" >&2
+  printf '\nwrangler deploy published no version (exit %s).\n' "$wrangler_status" >&2
+  printf 'The gateway is still serving whatever it served before this run.\n' >&2
+  exit 78
+fi
+
+tail -n 20 "$deploy_out"
+printf '==> published version %s\n' "$version_id"
+
+# This proves the gate is intact, not that anything was deployed: it passes
+# just as happily against the previously running Worker. The version assertion
+# above is what proves a deploy happened.
 printf '==> verify the Access gate still answers with an OAuth challenge\n'
 challenge="$(curl -sS -o /dev/null -D - "https://${EXECUTOR_HOSTNAME}/mcp" | tr -d '\r' | grep -i '^www-authenticate:' || true)"
 if [[ "$challenge" != *"Bearer"* ]]; then
