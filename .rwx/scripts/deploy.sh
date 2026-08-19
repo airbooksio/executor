@@ -60,9 +60,18 @@ export CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID
 
 # The committed wrangler.jsonc must already point at our D1 database; a
 # placeholder id would deploy a Worker bound to someone else's database.
-configured_db="$(jq -r '.d1_databases[0].database_id' apps/host-cloudflare/wrangler.jsonc 2>/dev/null || true)"
-if [[ ! "$configured_db" =~ ^[0-9a-f-]{36}$ ]]; then
-  printf 'wrangler.jsonc has no concrete D1 database_id (%s).\n' "$configured_db" >&2
+#
+# Parsed with grep, not jq: wrangler.jsonc is JSONC — `//` comments and
+# trailing commas — which jq rejects outright ("Invalid numeric literal"),
+# leaving the id empty and failing this check on a perfectly good config.
+# .airbooks/guard.sh asserts the same thing the same way.
+configured_db="$(
+  grep -E '"database_id"' apps/host-cloudflare/wrangler.jsonc |
+    grep -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' |
+    head -n1
+)"
+if [[ -z "$configured_db" ]]; then
+  printf 'wrangler.jsonc has no concrete D1 database_id.\n' >&2
   exit 78
 fi
 
