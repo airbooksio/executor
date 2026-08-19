@@ -151,8 +151,16 @@ if [[ "$wrangler_status" -ne 0 || -z "$version_id" ]]; then
   find "$HOME/.config/.wrangler/logs" "$HOME/.wrangler/logs" \
     -name 'wrangler-*.log' -type f 2>/dev/null |
     sort | tail -n1 | xargs -r tail -n 300 >&2 || true
-  printf '\nwrangler deploy published no version (exit %s).\n' "$wrangler_status" >&2
-  printf 'The gateway is still serving whatever it served before this run.\n' >&2
+  printf '\nwrangler deploy did not report a published version (exit %s).\n' "$wrangler_status" >&2
+
+  # Do not claim the gateway is untouched: wrangler uploads and deploys the
+  # Worker before it reconciles routes, so a late failure (a routes call the
+  # token cannot make, say) leaves NEW code live and only the route binding
+  # unapplied. Report what Cloudflare is actually serving instead of guessing.
+  printf 'What Cloudflare is serving right now:\n' >&2
+  curl -sS -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+    "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/scripts/executor-cloudflare/deployments" 2>/dev/null |
+    jq -r '.result.deployments[0] | "  deployed \(.created_on) version \(.versions[0].version_id)"' 2>/dev/null >&2 || true
   exit 78
 fi
 
