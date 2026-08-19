@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 
 import { expect } from "@effect/vitest";
-import { Effect } from "effect";
+import { Effect, Schedule } from "effect";
 import type { HttpApiClient } from "effect/unstable/httpapi";
 import { composePluginApi } from "@executor-js/api/server";
 import { connectEmulator, type EmulatorClient } from "@executor-js/emulate";
@@ -16,7 +16,7 @@ import {
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
 import type { Identity, Target as TargetShape } from "../src/target";
-import type { BrowserSurface } from "../src/surfaces/browser";
+import { clickToReveal, type BrowserSurface } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
@@ -88,12 +88,8 @@ const addGooglePresetFromCatalog = (
   browser.session(identity, async ({ page, step }) => {
     await step(`Open ${presetName} from the connect catalog`, async () => {
       await page.goto("/integrations", { waitUntil: "networkidle" });
-      await page
-        .getByRole("button", { name: /Connect/ })
-        .first()
-        .click();
       const dialog = page.getByRole("dialog", { name: "Connect an integration" });
-      await dialog.waitFor();
+      await clickToReveal(page.getByRole("button", { name: /Connect/ }).first(), dialog);
       await dialog.getByPlaceholder(/Search or paste a URL/).fill(presetName);
       await dialog.getByRole("link", { name: new RegExp(`^${presetName}\\b`) }).click();
     });
@@ -272,13 +268,27 @@ scenario(
           ).toBe("healthy");
         }
 
-        const ledger = yield* Effect.promise(() => emulator.client.ledger.list(100));
-        for (const row of rows) {
-          expect(
-            ledger.some((entry) => entry.operationId === row.expectedLedgerOperation),
-            `${row.presetName} health check reached the Google emulator`,
-          ).toBe(true);
-        }
+        // The hosted emulator acknowledges a request before its ledger entry
+        // is readable, so a single list right after the probe races the write
+        // (the health checks above already came back healthy, which only the
+        // emulator can answer). Poll until every expected operation is
+        // visible; on timeout the assertion names what never arrived.
+        const missing = yield* Effect.gen(function* () {
+          const ledger = yield* Effect.promise(() => emulator.client.ledger.list(100));
+          return rows.filter(
+            (row) => !ledger.some((entry) => entry.operationId === row.expectedLedgerOperation),
+          );
+        }).pipe(
+          Effect.repeat({
+            schedule: Schedule.spaced("500 millis"),
+            until: (unseen) => unseen.length === 0,
+            times: 19,
+          }),
+        );
+        expect(
+          missing.map((row) => row.presetName),
+          "every health check reached the Google emulator",
+        ).toEqual([]);
       }),
       Effect.gen(function* () {
         for (const row of rows) {
