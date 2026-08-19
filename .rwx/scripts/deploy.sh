@@ -58,6 +58,34 @@ export CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID
   exit 78
 }
 
+# The token being non-empty says nothing about whether it works. `wrangler
+# deploy` exits 0 and publishes nothing when its first Cloudflare API call
+# comes back unusable (runs 00c91798 and ec6a0eb6) and it prints no reason, so
+# make that same request ourselves and report what it actually answers. Only
+# the status code and the errors array are printed — never the token.
+#
+# This is deliberately NOT /user/tokens/verify: that endpoint 401s on
+# account-owned tokens even when they work fine, so gating on it would fail
+# good credentials. The Worker lookup is the request wrangler really makes.
+printf '==> check the Cloudflare credential against the Worker\n'
+
+svc_body="$(mktemp)"
+svc_code="$(curl -sS -o "$svc_body" -w '%{http_code}' \
+  -H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" \
+  "https://api.cloudflare.com/client/v4/accounts/${CLOUDFLARE_ACCOUNT_ID}/workers/services/executor-cloudflare" || true)"
+printf 'worker lookup: HTTP %s %s\n' "$svc_code" \
+  "$(jq -c '{success, errors}' "$svc_body" 2>/dev/null || true)"
+
+# 404 is legitimate: it means the Worker does not exist yet and wrangler will
+# create it. Anything else non-200 means the credential cannot do the job.
+if [[ "$svc_code" != "200" && "$svc_code" != "404" ]]; then
+  printf 'The deploy token cannot read the executor-cloudflare Worker, so\n' >&2
+  printf 'wrangler cannot deploy it. A 401 means CLOUDFLARE_API_TOKEN in\n' >&2
+  printf 'Doppler %s/%s is wrong or still a placeholder; a 403 means it is\n' "$EXECUTOR_DOPPLER_PROJECT" "$EXECUTOR_DOPPLER_CONFIG" >&2
+  printf 'valid but missing the Workers Scripts Edit scope on this account.\n' >&2
+  exit 78
+fi
+
 # The committed wrangler.jsonc must already point at our D1 database; a
 # placeholder id would deploy a Worker bound to someone else's database.
 #
@@ -89,6 +117,14 @@ fi
 
 printf '==> deploy\n'
 
+# Which runtime actually executes wrangler matters: `bunx` honours the bin's
+# shebang, so wrangler runs under node when node is present and under bun when
+# it is not, and wrangler's own telemetry cannot tell us which (bun reports a
+# node version too).
+printf 'runtime: bun %s / node %s\n' \
+  "$(bun --version 2>/dev/null || echo absent)" \
+  "$(node --version 2>/dev/null || echo absent)"
+
 # Capture wrangler's output rather than letting it stream to the task log,
 # because we have to assert on it.
 #
@@ -109,6 +145,12 @@ version_id="$(sed -n 's/.*Current Version ID:[[:space:]]*\([0-9a-f-]\{36\}\).*/\
 if [[ "$wrangler_status" -ne 0 || -z "$version_id" ]]; then
   printf '==> wrangler deploy output\n' >&2
   cat "$deploy_out" >&2
+  printf '\n==> wrangler debug log\n' >&2
+  # wrangler writes a full debug log to its own file, and when it exits
+  # abruptly that file holds the API response our captured output never got.
+  find "$HOME/.config/.wrangler/logs" "$HOME/.wrangler/logs" \
+    -name 'wrangler-*.log' -type f 2>/dev/null |
+    sort | tail -n1 | xargs -r tail -n 300 >&2 || true
   printf '\nwrangler deploy published no version (exit %s).\n' "$wrangler_status" >&2
   printf 'The gateway is still serving whatever it served before this run.\n' >&2
   exit 78
