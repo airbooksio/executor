@@ -92,6 +92,15 @@ tasks:
     use: code
     run: ./.airbooks/guard.sh
 
+  # wrangler is a Node CLI and the RWX image ships no node at all (verified:
+  # `command -v node` is empty on rwx/base 1.1.1), so `bunx wrangler` has been
+  # running it under bun. bunx honours the `#!/usr/bin/env node` shebang only
+  # when node exists, which is also why this works on a laptop and not here.
+  - key: node
+    call: nodejs/install 1.1.15
+    with:
+      node-version: "24.11.0"
+
   - key: doppler-cli
     use: code
     run: |
@@ -109,7 +118,7 @@ tasks:
 
   - key: deploy
     cache: false
-    use: [code, bun, deps, verify, doppler-cli]
+    use: [code, bun, deps, verify, doppler-cli, node]
     run: ./.rwx/scripts/deploy.sh
     env:
       EXECUTOR_CONFIRM: ${{ init.confirm }}
