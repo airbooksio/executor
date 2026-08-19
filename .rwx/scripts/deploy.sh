@@ -117,6 +117,14 @@ fi
 
 printf '==> deploy\n'
 
+# Which runtime actually executes wrangler matters: `bunx` honours the bin's
+# shebang, so wrangler runs under node when node is present and under bun when
+# it is not, and wrangler's own telemetry cannot tell us which (bun reports a
+# node version too).
+printf 'runtime: bun %s / node %s\n' \
+  "$(bun --version 2>/dev/null || echo absent)" \
+  "$(node --version 2>/dev/null || echo absent)"
+
 # Capture wrangler's output rather than letting it stream to the task log,
 # because we have to assert on it.
 #
