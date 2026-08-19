@@ -48,6 +48,20 @@ git push origin HEAD            # then open a PR
 
 `main` cannot be force-pushed, so the sync lands as a pull request.
 
+The script finishes by absorbing `main` with `git merge -s ours`, which keeps
+the rebased tree verbatim and records `main` as a parent. That step is not
+cosmetic: rebasing rewrites our config commits, and earlier syncs also replayed
+upstream's own commits, so `main` carries dozens of rebased *copies* of upstream
+work. Git sees two lineages holding the same changes and conflicts on upstream
+files we never touched — 85 of them on the 2026-08-19 sync. Since `main` cannot
+be force-pushed, the branch absorbs it instead.
+
+`-s ours` discards whatever the other side has, so the script first proves
+`main` holds nothing of ours that the rebase missed: it compares `.rwx`,
+`.airbooks`, `AIRBOOKS.md`, and `apps/host-cloudflare/wrangler.jsonc` against
+the branch and refuses if any differ, rather than silently dropping a change.
+It also asserts the merge left the tree byte-identical.
+
 The gating check is `.airbooks/guard.sh`, which asserts the edits this fork
 exists to carry — the custom-domain route and our D1 database id — plus that
 `keep_vars` stays on and the live Access variables are never committed. Any of
