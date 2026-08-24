@@ -9,7 +9,11 @@ import {
 } from "@executor-js/host-mcp";
 
 import type { CloudflareConfig, CloudflareEnv } from "../config";
-import { cloudflareDeadSessionCacheForTest, makeCloudflareMcpAgentHandler } from "./agent-handler";
+import {
+  cloudflareDeadSessionCacheForTest,
+  makeCloudflareMcpAgentHandler,
+  mappedServiceAuditRecord,
+} from "./agent-handler";
 
 const principal: Principal = {
   accountId: "acct_test",
@@ -27,6 +31,7 @@ const config = {
   accessNameClaim: "name",
   accessGroupsClaim: "groups",
   adminEmails: [],
+  accessServiceTokenSubjects: {},
   organizationId: "org_test",
   organizationName: "Test Org",
   organizationSlug: "test-org",
@@ -34,6 +39,43 @@ const config = {
   allowLocalNetwork: false,
   enableDevAuth: false,
 } satisfies CloudflareConfig;
+
+describe("mapped service-token audit", () => {
+  it("records actor, effective subject, Ray ID, and MCP session without credentials", () => {
+    const request = new Request("https://executor.test/mcp", {
+      headers: { "cf-ray": "ray-123" },
+    });
+    const record = mappedServiceAuditRecord(request, {
+      ...principal,
+      actorId: "service-client.access",
+    });
+
+    expect(record).toEqual({
+      event: "executor.mcp.service_subject",
+      actorId: "service-client.access",
+      subjectId: "acct_test",
+      organizationId: "org_test",
+      cloudflareRayId: "ray-123",
+      mcpSessionId: null,
+    });
+    expect(JSON.stringify(record)).not.toContain("secret");
+  });
+
+  it("does not emit a delegation audit record for an ordinary human principal", () => {
+    expect(
+      mappedServiceAuditRecord(new Request("https://executor.test/mcp"), principal),
+    ).toBeNull();
+  });
+
+  it("correlates delegation audit records for an existing session", () => {
+    const request = new Request("https://executor.test/mcp", {
+      headers: { "mcp-session-id": "session-123" },
+    });
+    expect(
+      mappedServiceAuditRecord(request, { ...principal, actorId: "service-client.access" }),
+    ).toMatchObject({ mcpSessionId: "session-123", actorId: "service-client.access" });
+  });
+});
 
 const AuthProviderLive = Layer.succeed(McpAuthProvider)({
   discoveryRoutes: [],

@@ -131,6 +131,18 @@ const authenticate = (request: Request, authProvider: Layer.Layer<McpAuthProvide
     return { auth, outcome };
   }).pipe(Effect.provide(authProvider));
 
+export const mappedServiceAuditRecord = (request: Request, principal: Principal) =>
+  principal.actorId
+    ? {
+        event: "executor.mcp.service_subject",
+        actorId: principal.actorId,
+        subjectId: principal.accountId,
+        organizationId: principal.organizationId,
+        cloudflareRayId: request.headers.get("cf-ray"),
+        mcpSessionId: request.headers.get("mcp-session-id"),
+      }
+    : null;
+
 const propsForPrincipal = (
   request: Request,
   principal: Principal,
@@ -141,6 +153,7 @@ const propsForPrincipal = (
       session: {
         organizationId: principal.organizationId,
         userId: principal.accountId,
+        ...(principal.actorId ? { actorId: principal.actorId } : {}),
         elicitationMode: readElicitationMode(request),
         artifactsEnabled: readArtifactsEnabled(request),
         // host-cloudflare only routes the bare `/mcp` endpoint to the session
@@ -198,6 +211,9 @@ export const makeCloudflareMcpAgentHandler = (
       }
       return renderAuthError(auth, request, outcome);
     }
+
+    const auditRecord = mappedServiceAuditRecord(request, outcome.principal);
+    if (auditRecord) console.info(JSON.stringify(auditRecord));
 
     const parsedBody = await Effect.runPromise(requestBodyFromRequest(request));
     const era = await classifyMcpProtocolEra(request, parsedBody);
