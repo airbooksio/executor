@@ -28,25 +28,41 @@ import type { CloudflareConfig } from "../config";
 export const principalFromAccessClaims = (
   claims: Record<string, unknown>,
   config: CloudflareConfig,
-): Principal => {
-  const email = typeof claims.email === "string" ? claims.email : "";
+): Principal | null => {
+  const claimedEmail = typeof claims.email === "string" ? claims.email : "";
   const sub = typeof claims.sub === "string" && claims.sub.length > 0 ? claims.sub : "";
   const commonName = typeof claims.common_name === "string" ? claims.common_name : "";
+  const isServiceToken = claims.type === "app" && sub.length === 0 && commonName.length > 0;
+  const email = isServiceToken ? "" : claimedEmail;
   const nameClaim = claims[config.accessNameClaim];
   const groupsClaim = claims[config.accessGroupsClaim];
   const groups = Array.isArray(groupsClaim) ? groupsClaim.map(String) : [];
-  const isAdmin = email.length > 0 && config.adminEmails.includes(email.toLowerCase());
+  const mappedServiceSubject = isServiceToken
+    ? (config.accessServiceTokenSubjects[commonName.toLowerCase()] ?? "")
+    : "";
+  const isAdmin =
+    !isServiceToken && email.length > 0 && config.adminEmails.includes(email.toLowerCase());
+  const accountId = mappedServiceSubject || sub || email || commonName;
+
+  if (accountId.length === 0) return null;
 
   return {
     kind: "member",
-    accountId: sub || email || commonName,
+    accountId,
+    ...(mappedServiceSubject ? { actorId: commonName } : {}),
     organizationId: config.organizationId,
     organizationName: config.organizationName,
     organizationSlug: config.organizationSlug,
     email,
     name: typeof nameClaim === "string" ? nameClaim : commonName || null,
     avatarUrl: null,
-    roles: isAdmin ? ["admin", ...groups] : groups.length > 0 ? groups : ["member"],
+    roles: isServiceToken
+      ? ["member"]
+      : isAdmin
+        ? ["admin", ...groups]
+        : groups.length > 0
+          ? groups
+          : ["member"],
   };
 };
 
