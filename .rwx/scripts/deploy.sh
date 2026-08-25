@@ -49,12 +49,22 @@ CLOUDFLARE_ACCOUNT_ID="$(
   doppler secrets get CLOUDFLARE_ACCOUNT_ID --plain \
     --project "$EXECUTOR_DOPPLER_PROJECT" --config "$EXECUTOR_DOPPLER_CONFIG"
 )"
+ACCESS_SERVICE_TOKEN_SUBJECTS="$(
+  doppler secrets get ACCESS_SERVICE_TOKEN_SUBJECTS --plain \
+    --project "$EXECUTOR_DOPPLER_PROJECT" --config "$EXECUTOR_DOPPLER_CONFIG"
+)"
 export CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID
 
 # Presence checks only — never echo a credential.
 [[ -n "$CLOUDFLARE_API_TOKEN" ]] || { printf 'CLOUDFLARE_API_TOKEN is empty.\n' >&2; exit 78; }
 [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ ]] || {
   printf 'CLOUDFLARE_ACCOUNT_ID is not a 32-character account id.\n' >&2
+  exit 78
+}
+printf '%s' "$ACCESS_SERVICE_TOKEN_SUBJECTS" |
+  jq -e 'type == "object" and length > 0 and all(to_entries[]; (.key | type == "string" and length > 0) and (.value | type == "string" and length > 0))' \
+    >/dev/null || {
+  printf 'ACCESS_SERVICE_TOKEN_SUBJECTS must be a non-empty JSON object with non-empty string keys and values.\n' >&2
   exit 78
 }
 
@@ -136,7 +146,9 @@ printf 'runtime: bun %s / node %s\n' \
 # of needing another round trip.
 deploy_out="$(mktemp)"
 set +e
-WRANGLER_LOG=debug bunx wrangler deploy >"$deploy_out" 2>&1
+WRANGLER_LOG=debug bunx wrangler deploy \
+  --var "ACCESS_SERVICE_TOKEN_SUBJECTS:${ACCESS_SERVICE_TOKEN_SUBJECTS}" \
+  >"$deploy_out" 2>&1
 wrangler_status=$?
 set -e
 

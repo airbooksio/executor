@@ -16,6 +16,7 @@ set -euo pipefail
 cd "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 
 config="apps/host-cloudflare/wrangler.jsonc"
+deploy_script=".rwx/scripts/deploy.sh"
 upstream_placeholder_d1="ae748ca1-032c-4427-a1a0-fe39db77d1a9"
 expected_hostname="executor.omega-markets.com"
 
@@ -26,6 +27,7 @@ fail() {
 
 [[ -f AIRBOOKS.md ]] || fail 'AIRBOOKS.md is missing: the fork must document why it diverges'
 [[ -f "$config" ]] || fail "$config is missing"
+[[ -f "$deploy_script" ]] || fail "$deploy_script is missing"
 
 grep -qF "\"pattern\": \"$expected_hostname\"" "$config" \
   || fail "$config lost the $expected_hostname custom-domain route (an upstream rebase may have reverted it)"
@@ -49,6 +51,12 @@ grep -qE '"(ACCESS_AUD|ACCESS_TEAM_DOMAIN|ADMIN_EMAILS)"[[:space:]]*:' "$config"
 
 grep -qF '"keep_vars": true' "$config" \
   || fail "$config must keep keep_vars enabled or a deploy will drop the live Access variables"
+
+grep -qF 'doppler secrets get ACCESS_SERVICE_TOKEN_SUBJECTS' "$deploy_script" \
+  || fail "$deploy_script must load the service-token subject map from Doppler"
+
+grep -qF 'ACCESS_SERVICE_TOKEN_SUBJECTS:${ACCESS_SERVICE_TOKEN_SUBJECTS}' "$deploy_script" \
+  || fail "$deploy_script must publish the service-token subject map with the Worker"
 
 # We never run upstream's GitHub Actions: RWX is the CI system here. Carrying
 # the files means a push needs the workflows permission, and leaves nine
