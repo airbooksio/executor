@@ -71,9 +71,10 @@ so Executor treats them as separate accounts by default. To let one dedicated
 MCP token use the same personal connections as a human login, map that token's
 `common_name` to the human Access JWT's stable `sub`:
 
-```bash
-bunx wrangler deploy \
-  --var ACCESS_SERVICE_TOKEN_SUBJECTS:<service-token-client-id>.access=<human-access-sub>
+```json
+{
+  "<service-token-client-id>.access": "<human-access-user_uuid>"
+}
 ```
 
 The mapping changes only the account that owns user-scoped data. A service
@@ -81,16 +82,13 @@ token always remains a `member`; it never inherits the human's email, admin
 role, or group claims. Treat the service-token secret as a bearer credential
 with access to that human's personal connections.
 
-Read the human `sub` from Cloudflare's `/cdn-cgi/access/get-identity` endpoint
-while signed in as that user. The service-token Client ID is the JWT's
-`common_name`. Multiple mappings are comma-separated, and duplicate token IDs
-are rejected at startup. When adding or changing one mapping, pass the complete
-mapping list again because the Worker variable stores the whole value.
-
-Mapped MCP requests emit a structured `executor.mcp.service_subject` audit
-record containing the service-token actor, effective subject, organization,
-Cloudflare Ray ID, and MCP session ID. Neither Access header nor token secret is
-logged.
+Read `user_uuid` from
+`https://<executor-host>/cdn-cgi/access/get-identity` while signed in as that
+user. It is the human `sub` in the verified Access JWT. The service-token Client
+ID is the JWT's `common_name`. Add one JSON property per person and provide the
+complete object whenever the Worker variable changes. Invalid JSON, empty
+values, non-string UUIDs, and duplicate token IDs after case normalization are
+rejected at startup.
 
 ## Local development
 

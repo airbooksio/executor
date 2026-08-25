@@ -64,7 +64,10 @@ describe("loadConfig", () => {
         makeEnv({
           ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
           ACCESS_AUD: "aud-tag",
-          ACCESS_SERVICE_TOKEN_SUBJECTS: "ABC123.access=user-123, DEF456.access=user-456",
+          ACCESS_SERVICE_TOKEN_SUBJECTS: JSON.stringify({
+            "ABC123.access": " user-123 ",
+            " DEF456.access ": "user-456",
+          }),
         }),
       ).accessServiceTokenSubjects,
     ).toEqual({
@@ -79,7 +82,7 @@ describe("loadConfig", () => {
         makeEnv({
           ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
           ACCESS_AUD: "aud-tag",
-          ACCESS_SERVICE_TOKEN_SUBJECTS: "missing-subject",
+          ACCESS_SERVICE_TOKEN_SUBJECTS: "not-json",
         }),
       ),
     ).toThrowError("ACCESS_SERVICE_TOKEN_SUBJECTS");
@@ -91,7 +94,28 @@ describe("loadConfig", () => {
         makeEnv({
           ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
           ACCESS_AUD: "aud-tag",
-          ACCESS_SERVICE_TOKEN_SUBJECTS: "ABC123.access=user-123, abc123.access=user-456",
+          ACCESS_SERVICE_TOKEN_SUBJECTS: JSON.stringify({
+            "ABC123.access": "user-123",
+            " abc123.access ": "user-456",
+          }),
+        }),
+      ),
+    ).toThrowError("ACCESS_SERVICE_TOKEN_SUBJECTS");
+  });
+
+  it.each([
+    ["an array", JSON.stringify(["user-123"])],
+    ["a null value", "null"],
+    ["an empty client ID", JSON.stringify({ " ": "user-123" })],
+    ["an empty subject", JSON.stringify({ "abc123.access": " " })],
+    ["a non-string subject", JSON.stringify({ "abc123.access": 123 })],
+  ])("rejects service-token subject mappings with %s", (_name, mapping) => {
+    expect(() =>
+      loadConfig(
+        makeEnv({
+          ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com",
+          ACCESS_AUD: "aud-tag",
+          ACCESS_SERVICE_TOKEN_SUBJECTS: mapping,
         }),
       ),
     ).toThrowError("ACCESS_SERVICE_TOKEN_SUBJECTS");
