@@ -69,7 +69,6 @@ export type IncomingTraceHeaders = IncomingPropagationHeaders;
 export interface McpSessionInit {
   readonly organizationId: string;
   readonly userId: string;
-  readonly actorId?: string;
   readonly elicitationMode: McpElicitationMode;
   /** Whether this session serves artifacts, read off `?artifacts=` at connect
    *  time. Absent means the default (enabled). */
