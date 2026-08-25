@@ -40,7 +40,6 @@ import type { OrgWriteAccess } from "@executor-js/sdk";
 
 const PrincipalFields = {
   accountId: Schema.String,
-  actorId: Schema.optional(Schema.String),
   organizationId: Schema.String,
   organizationName: Schema.String,
   /** The org's URL slug, when the auth provider resolved it. Threaded into
