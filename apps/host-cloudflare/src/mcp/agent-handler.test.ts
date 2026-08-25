@@ -27,6 +27,7 @@ const config = {
   accessNameClaim: "name",
   accessGroupsClaim: "groups",
   adminEmails: [],
+  accessServiceTokenSubjects: {},
   organizationId: "org_test",
   organizationName: "Test Org",
   organizationSlug: "test-org",

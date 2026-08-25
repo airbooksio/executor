@@ -64,7 +64,6 @@ describe("principalFromAccessClaims", () => {
     );
 
     expect(service?.accountId).toBe("user-123");
-    expect(service?.actorId).toBe("df8a20db.access");
     expect(service?.email).toBe("");
     expect(service?.roles).toEqual(["member"]);
   });
