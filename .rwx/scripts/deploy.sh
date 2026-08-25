@@ -10,8 +10,8 @@
 # its policies, and the service token are Terraform-owned in the executor/ root
 # of omega-network-infrastructure. The Access variables (ACCESS_AUD,
 # ACCESS_TEAM_DOMAIN, ADMIN_EMAILS) are live Worker vars preserved across
-# deploys by `keep_vars: true` in wrangler.jsonc. This script materializes only
-# the Doppler-owned service-token subject map and preserves every other live var.
+# deploys by `keep_vars: true` in wrangler.jsonc — this script never sets them,
+# so it cannot silently widen who reaches the gateway.
 
 set -euo pipefail
 
@@ -49,20 +49,12 @@ CLOUDFLARE_ACCOUNT_ID="$(
   doppler secrets get CLOUDFLARE_ACCOUNT_ID --plain \
     --project "$EXECUTOR_DOPPLER_PROJECT" --config "$EXECUTOR_DOPPLER_CONFIG"
 )"
-ACCESS_SERVICE_TOKEN_SUBJECTS="$(
-  doppler secrets get ACCESS_SERVICE_TOKEN_SUBJECTS --plain \
-    --project "$EXECUTOR_DOPPLER_PROJECT" --config "$EXECUTOR_DOPPLER_CONFIG"
-)"
 export CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID
 
 # Presence checks only — never echo a credential.
 [[ -n "$CLOUDFLARE_API_TOKEN" ]] || { printf 'CLOUDFLARE_API_TOKEN is empty.\n' >&2; exit 78; }
 [[ "$CLOUDFLARE_ACCOUNT_ID" =~ ^[0-9a-f]{32}$ ]] || {
   printf 'CLOUDFLARE_ACCOUNT_ID is not a 32-character account id.\n' >&2
-  exit 78
-}
-[[ "$ACCESS_SERVICE_TOKEN_SUBJECTS" =~ ^[^=,[:space:]]+=[^=,[:space:]]+(,[^=,[:space:]]+=[^=,[:space:]]+)*$ ]] || {
-  printf 'ACCESS_SERVICE_TOKEN_SUBJECTS is missing or malformed.\n' >&2
   exit 78
 }
 
@@ -124,11 +116,6 @@ if [[ ! -s dist/index.html ]]; then
 fi
 
 printf '==> deploy\n'
-
-# Materialize the Doppler-owned mapping as an encrypted Worker binding. stdin
-# keeps the value out of argv and Wrangler debug output; keep_vars preserves it
-# across the code deploy below along with every unrelated live binding.
-printf '%s' "$ACCESS_SERVICE_TOKEN_SUBJECTS" | bunx wrangler secret put ACCESS_SERVICE_TOKEN_SUBJECTS >/dev/null
 
 # Which runtime actually executes wrangler matters: `bunx` honours the bin's
 # shebang, so wrangler runs under node when node is present and under bun when

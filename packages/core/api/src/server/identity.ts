@@ -35,8 +35,6 @@ export interface Principal {
    *  instead of probing for a property's presence. */
   readonly kind: "member";
   readonly accountId: string;
-  /** Verified machine actor when it delegates to a different effective subject. */
-  readonly actorId?: string;
   readonly organizationId: string;
   readonly organizationName: string;
   /**
@@ -98,7 +96,6 @@ export class AuthContext extends Context.Service<
   AuthContext,
   {
     readonly accountId: string | null;
-    readonly actorId?: string;
     readonly organizationId: string;
     readonly email: string | null;
     readonly name: string | null;
@@ -110,7 +107,6 @@ export class AuthContext extends Context.Service<
 /** Build the shared `AuthContext` value from a resolved `Principal`. */
 export const authContextFromPrincipal = (principal: Principal): AuthContext["Service"] => ({
   accountId: principal.accountId,
-  ...(principal.actorId ? { actorId: principal.actorId } : {}),
   organizationId: principal.organizationId,
   email: principal.email,
   name: principal.name,
