@@ -35,6 +35,11 @@ has since been rebased onto upstream `1b5f931d`. A redeploy therefore also
 ships every upstream change in that range — read the upstream log before
 deploying, and update this section when you do.
 
+Each push to `main` rematerializes `ACCESS_SERVICE_TOKEN_SUBJECTS` from
+Doppler `executor-gateway` / `deploy` onto the Worker (`wrangler deploy
+--var`). `keep_vars` preserves the other Access bindings; it does not
+refresh that mapping unless this deploy lane runs.
+
 ```sh
 bunx wrangler deployments list   # what Cloudflare is actually serving
 ```
