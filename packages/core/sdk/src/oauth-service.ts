@@ -1939,10 +1939,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         redirectUrl: session.redirectUrl,
         codeVerifier: session.pkceVerifier,
         code: input.code,
-        clientAuth: client.tokenEndpointAuthMethod,
-        requestFormat: client.tokenRequestFormat,
         resource: client.resource ?? undefined,
         clientAuth: client.tokenEndpointAuthMethod,
+        requestFormat: client.tokenRequestFormat,
         endpointUrlPolicy: deps.endpointUrlPolicy,
         fetch,
       }).pipe(
