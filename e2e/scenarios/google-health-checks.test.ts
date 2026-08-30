@@ -13,16 +13,19 @@ import {
   OAuthClientSlug,
 } from "@executor-js/sdk/shared";
 
+import { createEmulatorInstance } from "../src/emulator-instance";
 import { scenario } from "../src/scenario";
 import { Api, Browser, Target } from "../src/services";
 import type { Identity, Target as TargetShape } from "../src/target";
-import { clickToReveal, type BrowserSurface } from "../src/surfaces/browser";
+import { type BrowserSurface, visit } from "../src/surfaces/browser";
 
 const api = composePluginApi([openApiHttpPlugin()] as const);
 type Client = HttpApiClient.ForApi<typeof api>;
 const GOOGLE_AUTH_TEMPLATE = AuthTemplateSlug.make("googleOAuth2");
 const CONNECTION = ConnectionName.make("main");
 const GOOGLE_EMULATOR_ACCOUNT_EMAIL = "testuser@gmail.com";
+const googleDiscoveryUrl = (service: string, version: string) =>
+  `https://www.googleapis.com/discovery/v1/apis/${service}/${version}/rest`;
 
 const unique = (prefix: string) => `${prefix}_${randomBytes(4).toString("hex")}`;
 
@@ -69,29 +72,27 @@ const completeGoogleConsent = (authorizationUrl: string) =>
     return code;
   });
 
-const createGoogleEmulator = Effect.promise(async () => {
-  const response = await fetch("https://google.emulators.dev/_emulate/instances", {
-    method: "POST",
-  });
-  if (!response.ok) throw new Error(`Google emulator instance failed: ${response.status}`);
-  const instance = (await response.json()) as { readonly providerBaseUrl: string };
-  const client = await connectEmulator({ baseUrl: instance.providerBaseUrl });
-  return { client, baseUrl: instance.providerBaseUrl };
+const createGoogleEmulator = Effect.gen(function* () {
+  // Through the shared helper: it bounds and retries the one request in this
+  // scenario that leaves the runner, so a blip on the way to the edge doesn't
+  // read as a Google health-check failure.
+  const baseUrl = yield* createEmulatorInstance("google", "google-health");
+  const client = yield* Effect.promise(() => connectEmulator({ baseUrl }));
+  return { client, baseUrl };
 });
 
-const addGooglePresetFromCatalog = (
+const addGooglePresetFromDirectUrl = (
   browser: BrowserSurface,
   identity: Identity,
   presetName: string,
+  presetId: string,
+  presetUrl: string,
   slug: string,
 ) =>
   browser.session(identity, async ({ page, step }) => {
-    await step(`Open ${presetName} from the connect catalog`, async () => {
-      await page.goto("/integrations", { waitUntil: "networkidle" });
-      const dialog = page.getByRole("dialog", { name: "Connect an integration" });
-      await clickToReveal(page.getByRole("button", { name: /Connect/ }).first(), dialog);
-      await dialog.getByPlaceholder(/Search or paste a URL/).fill(presetName);
-      await dialog.getByRole("link", { name: new RegExp(`^${presetName}\\b`) }).click();
+    await step(`Open the ${presetName} preset add flow directly`, async () => {
+      const search = new URLSearchParams({ preset: presetId, url: presetUrl });
+      await visit(page, `/integrations/add/openapi?${search}`);
     });
 
     await step(`Add the ${presetName} integration`, async () => {
@@ -201,6 +202,8 @@ scenario(
     const rows = [
       {
         presetName: "Google Calendar",
+        presetId: "google-calendar",
+        presetUrl: googleDiscoveryUrl("calendar", "v3"),
         slug: IntegrationSlug.make("google_calendar"),
         oauthClient: OAuthClientSlug.make(unique("google_calendar_oauth")),
         expectedHealthOperation: "calendar.calendarList.list",
@@ -209,6 +212,8 @@ scenario(
       },
       {
         presetName: "Gmail",
+        presetId: "google-gmail",
+        presetUrl: googleDiscoveryUrl("gmail", "v1"),
         slug: IntegrationSlug.make("google_gmail"),
         oauthClient: OAuthClientSlug.make(unique("google_gmail_oauth")),
         expectedHealthOperation: "gmail.users.labels.list",
@@ -220,7 +225,14 @@ scenario(
     yield* Effect.ensuring(
       Effect.gen(function* () {
         for (const row of rows) {
-          yield* addGooglePresetFromCatalog(browser, identity, row.presetName, String(row.slug));
+          yield* addGooglePresetFromDirectUrl(
+            browser,
+            identity,
+            row.presetName,
+            row.presetId,
+            row.presetUrl,
+            String(row.slug),
+          );
 
           const stored = yield* client.integrations.healthCheckGet({ params: { slug: row.slug } });
           expect(stored?.operation, `${row.presetName} stored health check`).toBe(
@@ -266,29 +278,31 @@ scenario(
             health.status,
             `${row.presetName} health check is healthy: ${JSON.stringify(health)}`,
           ).toBe("healthy");
-        }
 
-        // The hosted emulator acknowledges a request before its ledger entry
-        // is readable, so a single list right after the probe races the write
-        // (the health checks above already came back healthy, which only the
-        // emulator can answer). Poll until every expected operation is
-        // visible; on timeout the assertion names what never arrived.
-        const missing = yield* Effect.gen(function* () {
-          const ledger = yield* Effect.promise(() => emulator.client.ledger.list(100));
-          return rows.filter(
-            (row) => !ledger.some((entry) => entry.operationId === row.expectedLedgerOperation),
+          // Check this row's ledger entry HERE, not after both rows have run.
+          // `ledger.list(n)` is the last n entries, and connecting the second
+          // account is easily a hundred emulator requests, so the first row's
+          // health check can be evicted from the window before a combined
+          // assertion at the end ever looks for it — which reads as "Calendar's
+          // health check never reached the emulator" when it plainly did (the
+          // probe above came back healthy, and only the emulator can answer
+          // that). The hosted emulator also acknowledges a request before its
+          // ledger entry is readable, so poll rather than read once.
+          const reached = yield* Effect.promise(() => emulator.client.ledger.list(50)).pipe(
+            Effect.map((ledger) =>
+              ledger.some((entry) => entry.operationId === row.expectedLedgerOperation),
+            ),
+            Effect.repeat({
+              schedule: Schedule.spaced("500 millis"),
+              until: (seen) => seen,
+              times: 19,
+            }),
           );
-        }).pipe(
-          Effect.repeat({
-            schedule: Schedule.spaced("500 millis"),
-            until: (unseen) => unseen.length === 0,
-            times: 19,
-          }),
-        );
-        expect(
-          missing.map((row) => row.presetName),
-          "every health check reached the Google emulator",
-        ).toEqual([]);
+          expect(
+            reached,
+            `${row.presetName}'s health check reached the Google emulator as ${row.expectedLedgerOperation}`,
+          ).toBe(true);
+        }
       }),
       Effect.gen(function* () {
         for (const row of rows) {
@@ -322,7 +336,14 @@ scenario(
 
     yield* Effect.ensuring(
       Effect.gen(function* () {
-        yield* addGooglePresetFromCatalog(browser, identity, "Google Sheets", String(slug));
+        yield* addGooglePresetFromDirectUrl(
+          browser,
+          identity,
+          "Google Sheets",
+          "google-sheets",
+          googleDiscoveryUrl("sheets", "v4"),
+          String(slug),
+        );
 
         const stored = yield* client.integrations.healthCheckGet({ params: { slug } });
         expect(stored, "Google Sheets catalog preset declares no health check").toBeNull();

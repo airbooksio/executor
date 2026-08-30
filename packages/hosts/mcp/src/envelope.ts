@@ -1,31 +1,16 @@
+import { isJSONRPCRequest } from "@modelcontextprotocol/sdk/types.js";
 import { Effect, Match, Predicate } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
-import {
-  createMcpHandler,
-  isLegacyRequest,
-  type McpHttpHandler,
-  type McpRequestContext,
-} from "@modelcontextprotocol/server";
 
 import {
   defaultMcpResource,
   McpAuthProvider,
   McpErrorReporter,
-  McpModernServerBuilder,
   McpSessionStore,
-  mcpResourceKey,
   type AuthOutcome,
   type McpDispatchResult,
   type McpResource,
-  type Principal,
 } from "./seams";
-import {
-  appsEnabledForClientCapabilities,
-  clientCapabilitiesFromRequest,
-  mcpRequestStateBindingFromBody,
-  mcpRequestStatePrincipal,
-  requestBodyFromRequest,
-} from "./tool-server";
 
 // ---------------------------------------------------------------------------
 // Provider-neutral MCP serving envelope.
@@ -46,7 +31,7 @@ import {
 // The envelope hard-codes ONLY the MCP serving paths and CORS. Everything else
 // — every `/.well-known/*` path, the resource-metadata URL, the authn/authz
 // semantics, and the entire session lifecycle (create + forward + ownership) —
-// comes from the three seams.
+// comes from the two seams.
 //
 // Runtime-agnostic: built on `effect/unstable/http` (HttpRouter), NO
 // platform-bun. The `/mcp` flow is fully Effect; the streamable-HTTP transport
@@ -58,14 +43,6 @@ import {
 
 const MCP_PATH = "/mcp";
 const TOOLKIT_MCP_PATH = "/mcp/toolkits/:toolkitSlug";
-// Static fallback only: the 2026-07-28 era mirrors request params into
-// dynamic `Mcp-Param-<name>` headers (SEP-2243), and CORS header names never
-// glob — the preflight must echo `Access-Control-Request-Headers` verbatim to
-// admit them. `*` would not help either: it is ignored for credentialed
-// requests and never covers `Authorization`.
-const MCP_CORS_ALLOWED_HEADERS =
-  "content-type, authorization, mcp-session-id, accept, mcp-protocol-version, mcp-method, mcp-name";
-const MCP_CORS_EXPOSED_HEADERS = "mcp-session-id, mcp-protocol-version, WWW-Authenticate";
 
 /** The methods the streamable-HTTP transport accepts on `/mcp`. */
 const ALLOWED_MCP_METHODS = new Set(["GET", "POST", "DELETE", "OPTIONS"]);
@@ -92,19 +69,15 @@ const fromWebResponse = (response: Response): HttpServerResponse.HttpServerRespo
  * preflight against the metadata docs too (RFC 9728 discovery from a 401), so
  * the envelope answers OPTIONS for those paths, not only `/mcp`.
  */
-const corsPreflightResponse = (requestedHeaders?: string | null): Response =>
+const corsPreflightResponse = (): Response =>
   new Response(null, {
     status: 204,
     headers: {
       "access-control-allow-origin": "*",
       "access-control-allow-methods": "GET, POST, DELETE, OPTIONS",
-      // Echo the browser's requested headers so dynamic `Mcp-Param-<name>`
-      // names pass; the static list is the no-preflight-header fallback.
       "access-control-allow-headers":
-        requestedHeaders && requestedHeaders.trim() !== ""
-          ? requestedHeaders
-          : MCP_CORS_ALLOWED_HEADERS,
-      "access-control-expose-headers": MCP_CORS_EXPOSED_HEADERS,
+        "content-type, authorization, mcp-session-id, accept, mcp-protocol-version",
+      "access-control-expose-headers": "mcp-session-id, WWW-Authenticate",
     },
   });
 
@@ -135,30 +108,36 @@ export const jsonRpcErrorBody = (
     readonly cors?: boolean;
     readonly challenge?: string;
     readonly retryAfterSeconds?: number;
+    /**
+     * The id to echo. Envelope-level errors have no request to answer and stay
+     * at the default `null`; only an error that answers ONE identified JSON-RPC
+     * request (the pre-initialize guard below) sets it, since a client matches
+     * the response to its pending request by id.
+     */
+    readonly id?: string | number | null;
   },
 ): Response => {
   const cors = opts?.cors ?? true;
   const challenge = opts?.challenge;
   const retryAfterSeconds = opts?.retryAfterSeconds;
-  return new Response(JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: null }), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      ...(cors ? { "access-control-allow-origin": "*" } : {}),
-      ...(challenge
-        ? {
-            "www-authenticate": challenge,
-            "access-control-expose-headers": "WWW-Authenticate",
-          }
-        : {}),
-      ...(retryAfterSeconds === undefined ? {} : { "retry-after": String(retryAfterSeconds) }),
+  return new Response(
+    JSON.stringify({ jsonrpc: "2.0", error: { code, message }, id: opts?.id ?? null }),
+    {
+      status,
+      headers: {
+        "content-type": "application/json",
+        ...(cors ? { "access-control-allow-origin": "*" } : {}),
+        ...(challenge
+          ? {
+              "www-authenticate": challenge,
+              "access-control-expose-headers": "WWW-Authenticate",
+            }
+          : {}),
+        ...(retryAfterSeconds === undefined ? {} : { "retry-after": String(retryAfterSeconds) }),
+      },
     },
-  });
+  );
 };
-
-/** Graceful rollback response that lets auto-negotiating v2 clients try legacy. */
-export const mcpModernDisabledResponse = (opts?: { readonly cors?: boolean }): Response =>
-  jsonRpcErrorBody(400, -32022, "MCP 2026-07-28 support is disabled", opts);
 
 /**
  * Advertised on transient-auth 503s (`Unavailable` outcomes) so clients back
@@ -166,6 +145,97 @@ export const mcpModernDisabledResponse = (opts?: { readonly cors?: boolean }): R
  * membership lookups) are typically sub-second.
  */
 export const UNAVAILABLE_RETRY_AFTER_SECONDS = 2;
+
+/** JSON-RPC's own code for "this server does not implement that method". */
+const METHOD_NOT_FOUND = -32601;
+
+/**
+ * The transport's POST content negotiation, mirrored.
+ *
+ * `WebStandardStreamableHTTPServerTransport.handlePostRequest` refuses a POST
+ * on its headers alone, BEFORE it reads the body:
+ *
+ *   - `Accept` must list BOTH `application/json` and `text/event-stream`, else
+ *     406 Not Acceptable.
+ *   - `Content-Type` must include `application/json`, else 415 Unsupported
+ *     Media Type.
+ *
+ * The guard below answers 200 without ever consulting the transport, so it must
+ * not fire on a request the transport would have refused — that would turn a
+ * 406 or a 415 into a success. These are the SDK's own substring tests on the
+ * raw header values, copied so the two agree; a request that fails either falls
+ * through untouched and gets the transport's real 406/415.
+ *
+ * The transport's DNS-rebinding check runs earlier still, but it is inert
+ * unless a host passes `enableDnsRebindingProtection`, which no host here does.
+ */
+const passesTransportContentNegotiation = (request: Request): boolean => {
+  const accept = request.headers.get("accept");
+  if (!accept?.includes("application/json") || !accept.includes("text/event-stream")) return false;
+  const contentType = request.headers.get("content-type");
+  return contentType !== null && contentType.includes("application/json");
+};
+
+/**
+ * The pre-initialize dispatch guard, for the session-less POST every host
+ * handles before it hands the request to a fresh streamable-HTTP transport.
+ *
+ * Only `initialize` can open a session, so the transport answers every OTHER
+ * method with HTTP **400** + `-32000 Server not initialized`. A 400 is a
+ * transport-level failure: clients tear the connection down rather than treat
+ * it as one request failing. So a client that opens with an optional probe —
+ * MCP 2026-07-28 clients lead with `server/discover` — is disconnected before
+ * it can fall back to `initialize`, and the handshake never happens.
+ *
+ * JSON-RPC already has the right answer for a method the dispatcher doesn't
+ * know: `-32601 Method not found`, carried on a normal HTTP 200. It is a
+ * per-request error, so the connection survives and the client falls back.
+ *
+ * This deliberately covers ANY method other than `initialize` rather than
+ * naming `server/discover`: pre-session, `initialize` is the only method this
+ * dispatcher implements, so -32601 is the literal truth for the rest. It also
+ * can't silently mask a future real `server/discover` — implementing it means
+ * it stops being unknown here, instead of a special case going stale.
+ *
+ * The guard REPLACES one transport answer and must not shadow any of the
+ * others, so it fires only where it is the whole story: a POST that clears the
+ * transport's content negotiation AND carries a structurally valid JSON-RPC 2.0
+ * request. Everything else succeeds with `null` and reaches the transport
+ * untouched, keeping the transport's own response — a non-POST, a bad
+ * `Accept`/`Content-Type` (406/415), unparseable JSON or a message that is not
+ * a valid JSON-RPC request (400 parse error: a fractional id, a non-object
+ * `params`, an unknown top-level field), a batch, a notification or a response
+ * (no id to answer), and `initialize` itself.
+ *
+ * Structural validity is decided by the SDK's own `isJSONRPCRequest`, the exact
+ * predicate behind the transport's `JSONRPCMessageSchema.parse`, rather than a
+ * hand-rolled re-implementation that could drift from it.
+ *
+ * Reads a clone, leaving the caller's request body intact for the transport.
+ */
+export const preInitializeMethodNotFound = (request: Request): Effect.Effect<Response | null> =>
+  request.method !== "POST" || !passesTransportContentNegotiation(request)
+    ? Effect.succeed(null)
+    : Effect.tryPromise({
+        try: (): Promise<unknown> => request.clone().json(),
+        catch: () => null,
+      }).pipe(
+        // A body we cannot read is simply not ours to answer; hand it on.
+        Effect.orElseSucceed(() => null),
+        Effect.map(renderPreInitializeMethodNotFound),
+      );
+
+/** The pure decision behind {@link preInitializeMethodNotFound}. */
+const renderPreInitializeMethodNotFound = (body: unknown): Response | null => {
+  if (!isJSONRPCRequest(body)) return null;
+  if (body.method === "initialize") return null;
+  // An INNER response like every other store/handler error body: the host's
+  // outer envelope owns the CORS headers on the way out.
+  return jsonRpcErrorBody(200, METHOD_NOT_FOUND, "Method not found", {
+    cors: false,
+    id: body.id,
+  });
+};
 
 /** The envelope's own CORS-on JSON-RPC error `Response`, optionally carrying a challenge. */
 const jsonRpcResponse = (
@@ -262,92 +332,8 @@ const renderDispatchError = (lookup: "not-found" | "forbidden", method: string):
   return jsonRpcResponse(404, -32001, "Session not found");
 };
 
-const withModernMcpCors = (response: Response): Response => {
-  const headers = new Headers(response.headers);
-  headers.set("access-control-allow-origin", "*");
-  headers.set("access-control-expose-headers", MCP_CORS_EXPOSED_HEADERS);
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  });
-};
-
-interface ModernRequestInputs {
-  readonly builder: McpModernServerBuilder["Service"];
-  readonly parsedBody: unknown;
-  readonly principal: Principal;
-}
-
-interface ModernMcpRouter {
-  readonly fetch: (
-    request: Request,
-    principal: Principal,
-    resource: McpResource,
-    builder: McpModernServerBuilder["Service"],
-  ) => Promise<Response>;
-}
-
-/** Build the resource-keyed, process-lifetime modern handler cache. */
-const makeModernMcpRouter = (): ModernMcpRouter => {
-  const handlers = new Map<string, McpHttpHandler>();
-  const requestInputs = new WeakMap<Request, ModernRequestInputs>();
-  let signingKey: Uint8Array | undefined;
-
-  const getSigningKey = (): Uint8Array =>
-    (signingKey ??= crypto.getRandomValues(new Uint8Array(32)));
-
-  const handlerFor = (resource: McpResource): McpHttpHandler => {
-    const key = mcpResourceKey(resource);
-    const cached = handlers.get(key);
-    if (cached) return cached;
-
-    const handler = createMcpHandler(
-      (context: McpRequestContext) => {
-        const request = context.requestInfo;
-        const inputs = request ? requestInputs.get(request) : undefined;
-        if (!request || !inputs) {
-          // oxlint-disable-next-line executor/no-effect-escape-hatch -- boundary: the third-party McpServerFactory Promise contract has no typed failure channel; missing documented request context is an SDK defect
-          return Effect.runPromise(Effect.die("Modern MCP request has no authenticated context"));
-        }
-        return Effect.runPromise(
-          Effect.gen(function* () {
-            const clientCapabilities = yield* clientCapabilitiesFromRequest(request);
-            const requestStatePrincipal = mcpRequestStatePrincipal(inputs.principal);
-            const requestStateBinding = yield* Effect.promise(() =>
-              mcpRequestStateBindingFromBody({
-                body: inputs.parsedBody,
-                principal: requestStatePrincipal,
-                resource,
-              }),
-            );
-            return yield* inputs.builder.build(inputs.principal, {
-              resource,
-              appsEnabled: appsEnabledForClientCapabilities(clientCapabilities),
-              requestStateSigningKey: getSigningKey(),
-              requestStatePrincipal,
-              ...(requestStateBinding === null ? {} : { requestStateBinding }),
-            });
-          }),
-        );
-      },
-      { legacy: "reject" },
-    );
-    handlers.set(key, handler);
-    return handler;
-  };
-
-  return {
-    fetch: async (request, principal, resource, builder) => {
-      const parsedBody = await Effect.runPromise(requestBodyFromRequest(request));
-      requestInputs.set(request, { builder, parsedBody, principal });
-      return handlerFor(resource).fetch(request, { parsedBody });
-    },
-  };
-};
-
 /** Dispatch an MCP request through authenticate -> store.dispatch -> transport. */
-const mcpDispatch = (resource: McpResource, modern: ModernMcpRouter) =>
+const mcpDispatch = (resource: McpResource) =>
   Effect.gen(function* () {
     const httpRequest = yield* HttpServerRequest.HttpServerRequest;
     const auth = yield* McpAuthProvider;
@@ -356,9 +342,7 @@ const mcpDispatch = (resource: McpResource, modern: ModernMcpRouter) =>
 
     // CORS preflight: answer before auth so unauthenticated clients can probe.
     if (request.method === "OPTIONS") {
-      return fromWebResponse(
-        corsPreflightResponse(request.headers.get("access-control-request-headers")),
-      );
+      return fromWebResponse(corsPreflightResponse());
     }
 
     // Streamable-HTTP only defines GET/POST/DELETE on the endpoint. Any other
@@ -380,17 +364,6 @@ const mcpDispatch = (resource: McpResource, modern: ModernMcpRouter) =>
       return fromWebResponse(renderAuthError(auth, request, outcome));
     }
     const principal = outcome.principal;
-
-    if (!(yield* Effect.promise(() => isLegacyRequest(request)))) {
-      const builder = yield* McpModernServerBuilder;
-      if (builder.enabled === false) {
-        return fromWebResponse(mcpModernDisabledResponse());
-      }
-      const response = yield* Effect.promise(() =>
-        modern.fetch(request, principal, resource, builder),
-      );
-      return fromWebResponse(withModernMcpCors(response));
-    }
 
     // No session id: per the streamable-HTTP transport contract, only POST opens
     // a session. A GET needs an existing id (400); a DELETE on nothing is a
@@ -429,8 +402,8 @@ const mcpDispatch = (resource: McpResource, modern: ModernMcpRouter) =>
  * otherwise, since the envelope returns a `Response`) and rendered as a stable
  * JSON-RPC 500 -32603 + CORS, rather than a bare platform 500 with no body.
  */
-const mcpRoute = (resource: McpResource, modern: ModernMcpRouter) =>
-  mcpDispatch(resource, modern).pipe(
+const mcpRoute = (resource: McpResource) =>
+  mcpDispatch(resource).pipe(
     Effect.catchCause((cause) =>
       Effect.gen(function* () {
         const reporter = yield* McpErrorReporter;
@@ -440,16 +413,15 @@ const mcpRoute = (resource: McpResource, modern: ModernMcpRouter) =>
     ),
   );
 
-const toolkitMcpRoute = (modern: ModernMcpRouter) =>
-  Effect.gen(function* () {
-    const params = yield* HttpRouter.params;
-    const slug = params.toolkitSlug;
-    return yield* mcpRoute(slug ? { kind: "toolkit", slug } : defaultMcpResource, modern);
-  });
+const toolkitMcpRoute = Effect.gen(function* () {
+  const params = yield* HttpRouter.params;
+  const slug = params.toolkitSlug;
+  return yield* mcpRoute(slug ? { kind: "toolkit", slug } : defaultMcpResource);
+});
 
 /**
  * The shared MCP serving routes, as an `HttpRouter.use` Layer. A host merges
- * this with its other routes and provides the three seam Layers + the HTTP
+ * this with its other routes and provides the two seam Layers + the HTTP
  * platform services. Provider-neutral: cloud adopts the same Layer next.
  *
  * The discovery `GET` routes come from `McpAuthProvider.discoveryRoutes`, so
@@ -460,22 +432,16 @@ const toolkitMcpRoute = (modern: ModernMcpRouter) =>
 export const McpServingRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const auth = yield* McpAuthProvider;
-    const modern = makeModernMcpRouter();
     for (const route of auth.discoveryRoutes) {
       yield* router.add("GET", route.path, discoveryRoute(route.handler));
       yield* router.add(
         "OPTIONS",
         route.path,
-        Effect.gen(function* () {
-          const preflight = yield* HttpServerRequest.HttpServerRequest;
-          return fromWebResponse(
-            corsPreflightResponse(preflight.headers["access-control-request-headers"] ?? null),
-          );
-        }),
+        Effect.sync(() => fromWebResponse(corsPreflightResponse())),
       );
     }
-    yield* router.add("*", MCP_PATH, mcpRoute(defaultMcpResource, modern));
-    yield* router.add("*", TOOLKIT_MCP_PATH, toolkitMcpRoute(modern));
+    yield* router.add("*", MCP_PATH, mcpRoute(defaultMcpResource));
+    yield* router.add("*", TOOLKIT_MCP_PATH, toolkitMcpRoute);
   }),
 );
 
@@ -497,12 +463,7 @@ export const McpDiscoveryRoutes = HttpRouter.use((router) =>
       yield* router.add(
         "OPTIONS",
         route.path,
-        Effect.gen(function* () {
-          const preflight = yield* HttpServerRequest.HttpServerRequest;
-          return fromWebResponse(
-            corsPreflightResponse(preflight.headers["access-control-request-headers"] ?? null),
-          );
-        }),
+        Effect.sync(() => fromWebResponse(corsPreflightResponse())),
       );
     }
   }),

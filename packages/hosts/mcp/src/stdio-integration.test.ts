@@ -1,10 +1,12 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Client as ModernClient } from "@modelcontextprotocol/client";
-import { StdioClientTransport as ModernStdioClientTransport } from "@modelcontextprotocol/client/stdio";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
-import { Effect, Schema } from "effect";
+import {
+  ErrorCode,
+  LATEST_PROTOCOL_VERSION,
+  type JSONRPCMessage,
+} from "@modelcontextprotocol/sdk/types.js";
+import { Effect, Option, Schema } from "effect";
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -12,173 +14,198 @@ import { join, resolve } from "node:path";
 const repoRoot = resolve(import.meta.dirname, "../../../..");
 const cliEntry = resolve(repoRoot, "apps/cli/src/main.ts");
 const testScope = resolve(repoRoot, "apps/local");
-const stdioServerEntry = resolve(repoRoot, "apps/local/src/mcp-stdio-test-server.ts");
-const stdioServer = {
-  command: "bun",
-  args: ["run", stdioServerEntry],
-};
-const decodeDaemonManifest = Schema.decodeUnknownSync(
-  Schema.fromJsonString(Schema.Struct({ pid: Schema.Number })),
+
+const decodeServerManifest = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Struct({ pid: Schema.optional(Schema.Number) })),
 );
 
-const isProcessGroupAlive = (pid: number): boolean => {
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: process liveness probing reports false after the test daemon is reaped
-  try {
-    process.kill(process.platform === "win32" ? pid : -pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
+const manifestPid = (dataDir: string): number | undefined =>
+  Effect.runSync(
+    Effect.try({
+      try: () => readFileSync(join(dataDir, "server-control", "server.json"), "utf8"),
+      catch: () => undefined,
+    }).pipe(
+      Effect.map((text) => {
+        const manifest = decodeServerManifest(text);
+        return Option.isSome(manifest) ? manifest.value.pid : undefined;
+      }),
+      Effect.orElseSucceed(() => undefined),
+    ),
+  );
+
+/**
+ * Own the daemon this test bridges to, on its own port.
+ *
+ * `executor mcp` otherwise elects a daemon on the shared default port, and will
+ * adopt one that is already listening there — including a daemon belonging to a
+ * different `EXECUTOR_DATA_DIR`, whose bearer token this test does not have. A
+ * dedicated port keeps the test hermetic and parallel-safe. `daemon run` falls
+ * back to a free port if this one is taken, and writes the port it chose into
+ * the manifest that `executor mcp` reads, so the exact number is not load-bearing.
+ */
+const startDaemon = (dataDir: string): void => {
+  const port = 20_000 + Math.floor(Math.random() * 20_000);
+  const result = spawnSync(
+    "bun",
+    ["run", cliEntry, "daemon", "run", "--port", String(port), "--hostname", "127.0.0.1"],
+    { env: { ...process.env, EXECUTOR_DATA_DIR: dataDir, EXECUTOR_SCOPE_DIR: testScope } },
+  );
+  expect(result.status, `daemon run failed: ${result.stderr?.toString() ?? ""}`).toBe(0);
 };
 
-const signalProcessGroup = (pid: number, signal: NodeJS.Signals): void => {
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: Windows and pre-detach failures require a direct-pid fallback
-  try {
-    process.kill(process.platform === "win32" ? pid : -pid, signal);
-  } catch {
-    // oxlint-disable-next-line executor/no-try-catch-or-throw -- cleanup tolerates a daemon that exited between liveness check and signal
-    try {
-      process.kill(pid, signal);
-    } catch {}
-  }
-};
+/** Stop the daemon started above; the manifest carries its pid. */
+const stopDaemon = (dataDir: string): Effect.Effect<void> =>
+  Effect.sync(() => manifestPid(dataDir)).pipe(
+    Effect.flatMap((pid) =>
+      pid
+        ? Effect.try({ try: () => process.kill(pid, "SIGTERM"), catch: () => undefined }).pipe(
+            Effect.ignore,
+          )
+        : Effect.void,
+    ),
+    Effect.ignore,
+  );
 
-const stopAutoSpawnedDaemon = async (dataDir: string): Promise<void> => {
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- cleanup tolerates startup that failed before publishing a manifest
-  try {
-    const manifest = decodeDaemonManifest(
-      readFileSync(join(dataDir, "server-control", "server.json"), "utf8"),
-    );
-    if (!Number.isSafeInteger(manifest.pid) || manifest.pid <= 0) return;
-
-    const pid = manifest.pid;
-    signalProcessGroup(pid, "SIGTERM");
-    const deadline = performance.now() + 10_000;
-    while (isProcessGroupAlive(pid) && performance.now() < deadline) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-    if (isProcessGroupAlive(pid)) signalProcessGroup(pid, "SIGKILL");
-  } catch {
-    // No manifest means there is no auto-started daemon to stop.
-  }
-};
-
-const withTempData = Effect.acquireRelease(
-  Effect.sync(() => mkdtempSync(join(tmpdir(), "executor-mcp-test-"))),
+const withDaemon = Effect.acquireRelease(
+  Effect.sync(() => {
+    const dataDir = mkdtempSync(join(tmpdir(), "executor-mcp-discover-test-"));
+    startDaemon(dataDir);
+    return dataDir;
+  }),
   (dataDir) =>
-    Effect.promise(async () => {
-      await stopAutoSpawnedDaemon(dataDir);
-      rmSync(dataDir, { recursive: true, force: true });
-    }),
+    stopDaemon(dataDir).pipe(
+      Effect.ensuring(Effect.sync(() => rmSync(dataDir, { recursive: true, force: true }))),
+    ),
 );
+
+const messageQueue = (transport: StdioClientTransport) => {
+  const messages: Array<JSONRPCMessage> = [];
+  const waiters: Array<(message: JSONRPCMessage) => void> = [];
+
+  transport.onmessage = (message) => {
+    const waiter = waiters.shift();
+    if (waiter) {
+      waiter(message);
+    } else {
+      messages.push(message);
+    }
+  };
+
+  return {
+    next: (): Promise<JSONRPCMessage> => {
+      const message = messages.shift();
+      return message ? Promise.resolve(message) : new Promise((resolve) => waiters.push(resolve));
+    },
+  };
+};
 
 describe("MCP stdio integration", () => {
+  // The regression: a client that opens with an unsupported probe used to get
+  // the transport's fatal `-32000 Server not initialized` on an HTTP 400, which
+  // tore the bridge down before it could fall back to `initialize`. The whole
+  // handshake must survive the probe on ONE connection, through to a tool call.
   it.effect(
-    "execute tool returns result over the CLI stdio bridge",
+    "unsupported discovery keeps the connection open for initialization and tool calls",
     () =>
       Effect.gen(function* () {
-        // Fresh temp dir so the test doesn't migrate against the developer's
-        // real ~/.executor/data.db.
-        const dataDir = yield* withTempData;
+        const dataDir = yield* withDaemon;
         const transport = new StdioClientTransport({
           command: "bun",
           args: ["run", cliEntry, "mcp", "--scope", testScope],
           env: { ...process.env, EXECUTOR_DATA_DIR: dataDir },
         });
-        const client = new Client({ name: "test-client", version: "1.0.0" }, { capabilities: {} });
+        const responses = messageQueue(transport);
 
         yield* Effect.acquireRelease(
-          Effect.promise(() => client.connect(transport)),
+          Effect.promise(() => transport.start()),
           () => Effect.promise(() => transport.close()),
         );
 
-        const { tools } = yield* Effect.promise(() => client.listTools());
-        expect(tools.map(({ name }) => name)).toContain("execute");
-
-        const result = yield* Effect.promise(() =>
-          client.callTool({
-            name: "execute",
-            arguments: { code: "return 2+2" },
+        yield* Effect.promise(() =>
+          transport.send({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "server/discover",
+            params: {
+              _meta: {
+                "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                "io.modelcontextprotocol/clientInfo": {
+                  name: "discovery-test-client",
+                  version: "1.0.0",
+                },
+                "io.modelcontextprotocol/clientCapabilities": {},
+              },
+            },
           }),
         );
 
-        const text = (result.content as Array<{ type: string; text: string }>)[0]?.text;
-        expect(text).toContain("4");
-        expect(result.isError).toBeFalsy();
-      }).pipe(Effect.scoped),
-    { timeout: 30_000 },
-  );
-
-  it.effect(
-    "serves a legacy client and completes the native elicitation round-trip",
-    () =>
-      Effect.gen(function* () {
-        const transport = new StdioClientTransport(stdioServer);
-        const client = new Client(
-          { name: "legacy-stdio-test-client", version: "1.0.0" },
-          { capabilities: { elicitation: { form: {} } } },
-        );
-        let elicitationRequests = 0;
-        client.setRequestHandler(ElicitRequestSchema, async (request) => {
-          elicitationRequests += 1;
-          expect(request.params).toMatchObject({ message: "Approve the stdio action?" });
-          return { action: "accept" as const, content: { value: "approved" } };
+        expect(yield* Effect.promise(() => responses.next())).toEqual({
+          jsonrpc: "2.0",
+          id: 1,
+          error: {
+            code: ErrorCode.MethodNotFound,
+            message: "Method not found",
+          },
         });
 
-        yield* Effect.acquireRelease(
-          Effect.promise(() => client.connect(transport)),
-          () => Effect.promise(() => transport.close()),
-        );
-
-        const { tools } = yield* Effect.promise(() => client.listTools());
-        expect(tools.map((t) => t.name)).toContain("execute");
-
-        const result = yield* Effect.promise(() =>
-          client.callTool({
-            name: "execute",
-            arguments: { code: "needs approval" },
+        yield* Effect.promise(() =>
+          transport.send({
+            jsonrpc: "2.0",
+            id: 2,
+            method: "initialize",
+            params: {
+              protocolVersion: LATEST_PROTOCOL_VERSION,
+              capabilities: {},
+              clientInfo: {
+                name: "discovery-test-client",
+                version: "1.0.0",
+              },
+            },
           }),
         );
 
-        const text = (result.content as Array<{ type: string; text: string }>)[0]?.text;
-        expect(text).toContain("approved");
-        expect(result.isError).toBeFalsy();
-        expect(elicitationRequests).toBe(1);
-      }).pipe(Effect.scoped),
-    { timeout: 30_000 },
-  );
+        const initialize = yield* Effect.promise(() => responses.next());
+        expect(initialize).toHaveProperty("result.protocolVersion");
 
-  it.effect(
-    "serves a modern-pinned client over the same stdio entry",
-    () =>
-      Effect.gen(function* () {
-        const transport = new ModernStdioClientTransport(stdioServer);
-        const client = new ModernClient(
-          { name: "modern-stdio-test-client", version: "1.0.0" },
-          {
-            capabilities: {},
-            versionNegotiation: { mode: { pin: "2026-07-28" } },
-          },
+        yield* Effect.promise(() =>
+          transport.send({
+            jsonrpc: "2.0",
+            method: "notifications/initialized",
+          }),
         );
-
-        yield* Effect.acquireRelease(
-          Effect.promise(() => client.connect(transport)),
-          () => Effect.promise(() => transport.close()),
-        );
-
-        const { tools } = yield* Effect.promise(() => client.listTools());
-        expect(tools.map(({ name }) => name)).toContain("execute");
-
-        const result = yield* Effect.promise(() =>
-          client.callTool({
-            name: "execute",
-            arguments: { code: "return 2+2" },
+        yield* Effect.promise(() =>
+          transport.send({
+            jsonrpc: "2.0",
+            id: 3,
+            method: "tools/list",
+            params: {},
           }),
         );
 
-        expect(result.content).toEqual([{ type: "text", text: "4" }]);
-        expect(result.isError).toBeFalsy();
+        const listed = yield* Effect.promise(() => responses.next());
+        expect(listed).toHaveProperty(
+          "result.tools",
+          expect.arrayContaining([expect.objectContaining({ name: "execute" })]),
+        );
+
+        yield* Effect.promise(() =>
+          transport.send({
+            jsonrpc: "2.0",
+            id: 4,
+            method: "tools/call",
+            params: {
+              name: "execute",
+              arguments: { code: "return 2+2" },
+            },
+          }),
+        );
+
+        const called = yield* Effect.promise(() => responses.next());
+        expect(called).toHaveProperty(
+          "result.content",
+          expect.arrayContaining([expect.objectContaining({ text: expect.stringContaining("4") })]),
+        );
       }).pipe(Effect.scoped),
-    { timeout: 30_000 },
+    { timeout: 120_000 },
   );
 });
