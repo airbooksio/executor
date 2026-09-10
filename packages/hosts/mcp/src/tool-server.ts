@@ -2362,7 +2362,7 @@ export const createExecutorMcpServer = <E extends Cause.YieldableError>(
         );
       }
 
-      console.error(
+      console.info(
         "[executor] MCP session mode",
         JSON.stringify({
           ...capabilitySnapshot(server),
