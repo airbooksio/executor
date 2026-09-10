@@ -63,6 +63,8 @@ export const principalFromAccessClaims = (
         : groups.length > 0
           ? groups
           : ["member"],
+    orgRoleModel: "organization",
+    orgRole: isAdmin ? "admin" : "member",
   };
 };
 
@@ -94,6 +96,8 @@ export const makeAccessVerifier = (config: CloudflareConfig) => {
     name: "Dev",
     avatarUrl: null,
     roles: ["admin"],
+    orgRoleModel: "organization",
+    orgRole: "admin",
   };
 
   const verify = (request: Request): Effect.Effect<Principal | null> =>

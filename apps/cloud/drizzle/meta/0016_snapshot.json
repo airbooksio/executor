@@ -1,5 +1,5 @@
 {
-  "id": "aec7993e-87f4-40e6-87df-12fe915bf8ad",
+  "id": "f22622e4-cfd6-4224-b653-050244dc511e",
   "prevId": "d666b31a-c3d1-4bd7-9bd6-85f2abc4fb55",
   "version": "7",
   "dialect": "postgresql",
@@ -777,14 +777,14 @@
           "primaryKey": false,
           "notNull": false
         },
-        "resource": {
-          "name": "resource",
+        "token_endpoint_auth_method": {
+          "name": "token_endpoint_auth_method",
           "type": "text",
           "primaryKey": false,
           "notNull": false
         },
-        "token_endpoint_auth_method": {
-          "name": "token_endpoint_auth_method",
+        "resource": {
+          "name": "resource",
           "type": "text",
           "primaryKey": false,
           "notNull": false

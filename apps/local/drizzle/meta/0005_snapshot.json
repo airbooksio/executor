@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "3f8bf067-80ea-4545-be0c-e0fc20919d45",
+  "id": "e917e9d4-f3b5-453d-8549-540e2ecc986f",
   "prevId": "85f30981-cda9-45df-b757-b2836fb70e07",
   "tables": {
     "blob": {
@@ -423,15 +423,15 @@
           "notNull": false,
           "autoincrement": false
         },
-        "resource": {
-          "name": "resource",
+        "token_endpoint_auth_method": {
+          "name": "token_endpoint_auth_method",
           "type": "text",
           "primaryKey": false,
           "notNull": false,
           "autoincrement": false
         },
-        "token_endpoint_auth_method": {
-          "name": "token_endpoint_auth_method",
+        "resource": {
+          "name": "resource",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

@@ -60,6 +60,7 @@ describe("oauth.listClients", () => {
           grant: "authorization_code",
           clientId: "org-client-id",
           clientSecret: "org-super-secret",
+          tokenEndpointAuthMethod: "basic",
         });
         yield* executor.oauth.createClient({
           owner: "user",
@@ -91,6 +92,7 @@ describe("oauth.listClients", () => {
           tokenUrl: "https://acme.test/token",
           resource: null,
           clientId: "org-client-id",
+          tokenEndpointAuthMethod: "basic",
           // Manual apps carry a nullable recorded-intent integration; a client
           // created outside any integration dialog stamps null.
           origin: { kind: "manual", integration: null },
@@ -108,39 +110,30 @@ describe("oauth.listClients", () => {
     ),
   );
 
-  it.effect("round-trips tokenEndpointAuthMethod: only 'basic' is materialized", () =>
+  it.effect("rejects HTTP Basic authentication without a client secret", () =>
     Effect.scoped(
       Effect.gen(function* () {
         const { executor } = yield* makeTestWorkspaceHarness({ plugins });
 
-        yield* executor.oauth.createClient({
-          owner: "org",
-          slug: ORG_CLIENT,
-          authorizationUrl: "",
-          tokenUrl: "https://acme.test/token",
-          grant: "client_credentials",
-          clientId: "basic-client",
-          clientSecret: "s3cret",
-          tokenEndpointAuthMethod: "basic",
-        });
-        // A second client with the default (body) method, sent explicitly.
-        yield* executor.oauth.createClient({
-          owner: "user",
-          slug: USER_CLIENT,
-          authorizationUrl: "",
-          tokenUrl: "https://byo.test/token",
-          grant: "client_credentials",
-          clientId: "body-client",
-          clientSecret: "s3cret",
-          tokenEndpointAuthMethod: "body",
-        });
-
-        const bySlug = new Map(
-          (yield* executor.oauth.listClients()).map((c) => [String(c.slug), c]),
+        const error = yield* Effect.flip(
+          executor.oauth.createClient({
+            owner: "org",
+            slug: ORG_CLIENT,
+            authorizationUrl: "https://acme.test/authorize",
+            tokenUrl: "https://acme.test/token",
+            grant: "authorization_code",
+            clientId: "public-client-id",
+            clientSecret: "",
+            tokenEndpointAuthMethod: "basic",
+          }),
         );
-        // "basic" surfaces on the summary; "body" stays implicit (omitted).
-        expect(bySlug.get(String(ORG_CLIENT))?.tokenEndpointAuthMethod).toBe("basic");
-        expect(bySlug.get(String(USER_CLIENT))?.tokenEndpointAuthMethod).toBeUndefined();
+
+        expect(error).toEqual(
+          expect.objectContaining({
+            _tag: "StorageError",
+            message: expect.stringContaining("requires a client secret"),
+          }),
+        );
       }),
     ),
   );

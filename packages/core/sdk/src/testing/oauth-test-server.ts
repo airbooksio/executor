@@ -60,6 +60,7 @@ export interface OAuthTestServerOptions {
   readonly defaultPassword?: string;
   readonly defaultClientId?: string;
   readonly defaultClientSecret?: string;
+  readonly defaultTokenEndpointAuthMethod?: "client_secret_post" | "client_secret_basic";
   readonly clients?: Readonly<Record<string, string | null>>;
   readonly scopes?: readonly string[];
   readonly omitTokenResponseScopes?: readonly string[];
@@ -104,13 +105,6 @@ export interface OAuthTestServerOptions {
   readonly enterpriseResourceServer?: EnterpriseResourceServerOptions;
   /** Advertise OAuth Client ID Metadata Document support alongside DCR. */
   readonly clientIdMetadataDocumentSupported?: boolean;
-  /** When set, the `/token` endpoint ENFORCES a client-auth transport on every
-   *  request. `"basic"` rejects (401 invalid_client) any request that does not
-   *  carry HTTP Basic credentials (proves the client used `client_secret_basic`);
-   *  `"body"` rejects any
-   *  request that carries HTTP Basic (forces `client_secret_post`). Omitting it
-   *  keeps the permissive default that accepts either. */
-  readonly requireClientAuthMethod?: "basic" | "body";
 }
 
 export interface EnterpriseIdpOptions {
@@ -168,11 +162,6 @@ export interface OAuthTestServerShape {
   readonly requests: Effect.Effect<readonly OAuthTestServerRequest[]>;
   readonly clearRequests: Effect.Effect<void>;
   readonly issuedAccessTokens: Effect.Effect<readonly string[]>;
-  /** Ordered log of which client-auth transport (`"basic"` | `"body"`) each
-   *  `/token` request used, by arrival order; reset by `clearRequests`. Use it
-   *  to assert that `exchangeClientCredentials` / `refreshAccessToken` actually
-   *  sent credentials via HTTP Basic rather than in the form body. */
-  readonly tokenRequestAuthMethods: Effect.Effect<readonly ("basic" | "body")[]>;
   readonly acceptsAccessToken: (token: string) => Effect.Effect<boolean>;
   /** Stop honouring a token this server issued, without re-issuing anything.
    *  Drives the "the stored identity assertion died" tier: an enterprise IdP
@@ -260,21 +249,6 @@ const parseJsonObject = (body: string): Readonly<Record<string, unknown>> | null
 const arrayOfStrings = (value: unknown): readonly string[] =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 
-// RFC 6749 §2.3.1: the client id and secret in an HTTP Basic header are each
-// `application/x-www-form-urlencoded` BEFORE base64, so a spec-compliant server
-// must form-decode them after splitting. oauth4webapi's ClientSecretBasic
-// percent-encodes (e.g. `test-client` -> `test%2Dclient`); without decoding,
-// the id would never match (the body/`client_secret_post` path gets this for
-// free via URLSearchParams). Falls back to the raw slice on malformed input.
-const formDecode = (value: string): string => {
-  // oxlint-disable-next-line executor/no-try-catch-or-throw -- boundary: decodeURIComponent throws on malformed percent-escapes; fall back to raw
-  try {
-    return decodeURIComponent(value.replace(/\+/g, " "));
-  } catch {
-    return value;
-  }
-};
-
 const decodeBasicAuthorization = (
   value: string | undefined,
 ): { readonly username: string; readonly password: string } | null => {
@@ -284,9 +258,11 @@ const decodeBasicAuthorization = (
   const decoded = Buffer.from(match[1]!, "base64").toString("utf8");
   const separator = decoded.indexOf(":");
   if (separator < 0) return null;
+  const decodeFormComponent = (component: string): string =>
+    new URLSearchParams(`value=${component}`).get("value") ?? component;
   return {
-    username: formDecode(decoded.slice(0, separator)),
-    password: formDecode(decoded.slice(separator + 1)),
+    username: decodeFormComponent(decoded.slice(0, separator)),
+    password: decodeFormComponent(decoded.slice(separator + 1)),
   };
 };
 
@@ -565,8 +541,6 @@ export const serveOAuthTestServer = (
   Effect.gen(function* () {
     const requests = yield* Ref.make<readonly OAuthTestServerRequest[]>([]);
     const issuedAccessTokens = yield* Ref.make<ReadonlySet<string>>(new Set());
-    const tokenRequestAuthMethods = yield* Ref.make<readonly ("basic" | "body")[]>([]);
-    const requireClientAuthMethod = options.requireClientAuthMethod;
     const users = {
       [options.defaultUsername ?? "alice"]: options.defaultPassword ?? "password",
       ...(options.users ?? {}),
@@ -595,7 +569,7 @@ export const serveOAuthTestServer = (
     clients.set(defaultClientId, {
       clientSecret: defaultClientSecret,
       redirectUris: new Set(),
-      tokenEndpointAuthMethod: "client_secret_post",
+      tokenEndpointAuthMethod: options.defaultTokenEndpointAuthMethod ?? "client_secret_post",
     });
     for (const [clientId, clientSecret] of Object.entries(options.clients ?? {})) {
       clients.set(clientId, {
@@ -810,30 +784,17 @@ export const serveOAuthTestServer = (
         if (requestUrl.pathname === "/token" && request.method === "POST") {
           const params = new URLSearchParams(body);
           const basic = decodeBasicAuthorization(headers.authorization);
-          // Record which client-auth transport this /token call used, then (when
-          // configured) enforce a required one. Recording happens for ALL grant
-          // types so tests can assert the transport on any flow.
-          const usedAuthMethod: "basic" | "body" = basic ? "basic" : "body";
-          yield* Ref.update(tokenRequestAuthMethods, (all) => [...all, usedAuthMethod]);
-          if (requireClientAuthMethod === "basic" && !basic) {
-            return oauthError(
-              401,
-              "invalid_client",
-              "This authorization server requires HTTP Basic client authentication",
-            );
-          }
-          if (requireClientAuthMethod === "body" && basic) {
-            return oauthError(
-              401,
-              "invalid_client",
-              "This authorization server requires client_secret_post (body) client authentication",
-            );
-          }
           const clientId = basic?.username ?? params.get("client_id");
           const clientSecret = basic?.password ?? params.get("client_secret");
           const client = clientId ? clients.get(clientId) : undefined;
           if (!clientId || !client) {
             return oauthError(401, "invalid_client", "Unknown client");
+          }
+          if (
+            (client.tokenEndpointAuthMethod === "client_secret_basic" && !basic) ||
+            (client.tokenEndpointAuthMethod === "client_secret_post" && basic)
+          ) {
+            return oauthError(401, "invalid_client", "Wrong client authentication method");
           }
           if (client.clientSecret !== null && client.clientSecret !== clientSecret) {
             return oauthError(401, "invalid_client", "Invalid client secret");
@@ -1132,11 +1093,8 @@ export const serveOAuthTestServer = (
         tokenEndpoint: `${issuerUrl}/token`,
       }),
       requests: Ref.get(requests),
-      clearRequests: Effect.all([Ref.set(requests, []), Ref.set(tokenRequestAuthMethods, [])]).pipe(
-        Effect.asVoid,
-      ),
+      clearRequests: Ref.set(requests, []),
       issuedAccessTokens: accessTokenSet.pipe(Effect.map((tokens) => [...tokens])),
-      tokenRequestAuthMethods: Ref.get(tokenRequestAuthMethods),
       acceptsAccessToken: (token) => accessTokenSet.pipe(Effect.map((tokens) => tokens.has(token))),
       revokeAccessToken: (token) =>
         Ref.update(issuedAccessTokens, (tokens) => {
