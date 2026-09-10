@@ -321,7 +321,7 @@ describe("exchangeAuthorizationCode", () => {
         });
         const call = (yield* calls)[0]!;
         expect(call.headers["content-type"]).toBe("application/json");
-        expect(call.headers["authorization"]).toBe("Basic Y2lkOmMlMkRzZWNyZXQ=");
+        expect(call.headers["authorization"]).toBe("Basic Y2lkOmMtc2VjcmV0");
         expect(call.jsonBody).toEqual({
           grant_type: "authorization_code",
           code: "abc",
@@ -818,7 +818,7 @@ describe("exchangeAuthorizationCode", () => {
           clientAuth: "basic",
         });
         const call = (yield* calls)[0]!;
-        const expected = `Basic ${Buffer.from("cid:c%2Dsecret").toString("base64")}`;
+        const expected = `Basic ${Buffer.from("cid:c-secret").toString("base64")}`;
         expect(call.headers["authorization"]).toBe(expected);
         expect(call.body.has("client_id")).toBe(false);
         expect(call.body.has("client_secret")).toBe(false);
@@ -1312,6 +1312,26 @@ describe("exchangeAuthorizationCode", () => {
 });
 
 describe("exchangeClientCredentials", () => {
+  it.effect("uses literal HTTP Basic credentials when clientAuth=basic", () =>
+    withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl, calls }) =>
+      Effect.gen(function* () {
+        yield* exchangeClientCredentials({
+          tokenUrl,
+          clientId: "client_id-with-punctuation",
+          clientSecret: "client_secret-with-punctuation",
+          clientAuth: "basic",
+        });
+        const call = (yield* calls)[0]!;
+        const expected = `Basic ${Buffer.from(
+          "client_id-with-punctuation:client_secret-with-punctuation",
+        ).toString("base64")}`;
+        expect(call.headers["authorization"]).toBe(expected);
+        expect(call.body.has("client_id")).toBe(false);
+        expect(call.body.has("client_secret")).toBe(false);
+      }),
+    ),
+  );
+
   it.effect("routes token grant requests through the injected fetch", () =>
     withTokenEndpoint(tokenResponse(validRefreshBody), ({ tokenUrl }) =>
       Effect.gen(function* () {

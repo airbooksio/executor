@@ -850,10 +850,13 @@ export type ClientAuthMethod = TokenEndpointAuthMethod;
  * method our DCR registers (`token_endpoint_auth_method: client_secret_post`)
  * and the one every confidential client in the v2 model uses. EXPLICIT and
  * documented rather than a hidden inline `?? "body"`: callers that need
- * `client_secret_basic` pass `clientAuth: "basic"`. Providers that reject the
- * RFC form encoding can explicitly pass `clientAuth: "basic_raw"`. For PUBLIC
- * clients (no secret) the method is irrelevant — `pickClientAuth` returns
- * `None()`.
+ * `client_secret_basic` pass `clientAuth: "basic"` or `"basic_raw"`. Both send
+ * the interoperable HTTP Basic representation (Base64 of the literal UTF-8
+ * `client_id:client_secret` pair). oauth4webapi's RFC 6749 form-encoding of
+ * each component before Base64 is not used: providers such as Aikido compare
+ * the decoded username and password literally, so `_` becoming `%5F` is a
+ * rejected credential. For PUBLIC clients (no secret) the method is
+ * irrelevant — `pickClientAuth` returns `None()`.
  */
 export const DEFAULT_CLIENT_AUTH_METHOD: ClientAuthMethod = "body";
 
@@ -936,8 +939,11 @@ const pickClientAuth = (
   method: ClientAuthMethod,
 ): oauth.ClientAuth => {
   if (!clientSecret) return oauth.None();
-  if (method === "basic") return oauth.ClientSecretBasic(clientSecret);
-  if (method === "basic_raw") return rawClientSecretBasic(clientSecret);
+  // `"basic"` and `"basic_raw"` are the same wire format on this fork: the
+  // interoperable literal pair, not oauth4webapi's RFC-strict form-encoding.
+  // Stored Aikido apps use `"basic"`; upstream later split a `"basic_raw"`
+  // alias. Collapsing them keeps refresh and re-mint working for those rows.
+  if (method === "basic" || method === "basic_raw") return rawClientSecretBasic(clientSecret);
   return oauth.ClientSecretPost(clientSecret);
 };
 
