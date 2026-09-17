@@ -3618,6 +3618,13 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
             integration: String(ref.integration),
             connection: String(ref.name),
           });
+          // A background stale-catalog rebuild discards the returned catalog
+          // (the read answers from the persisted rows), so materializing every
+          // preserved tool row — the schema columns included — only to drop it
+          // is a whole-catalog D1 read per reattempt. The rows stay in place;
+          // skip the copy. An explicit read that joined this in-flight run
+          // flips `mode()` to "explicit" and still gets the rows.
+          if (mode() === "background") return [];
           const keptRows = yield* core.findMany("tool", { where });
           return keptRows.map((row) => rowToTool(row as ConnectionToolRow));
         }
