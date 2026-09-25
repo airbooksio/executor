@@ -14,7 +14,7 @@ import {
 } from "./execution";
 import { ErrorCaptureLive } from "./observability";
 import { cloudflareAccountMiddleware } from "./account/account-provider";
-import { makeCloudflareApprovalHandler } from "./mcp";
+import { cloudflareAccessMcpAuth, makeCloudflareApprovalHandler } from "./mcp";
 import { makeCloudflareMcpAgentHandler } from "./mcp/agent-handler";
 import { preloadQuickJs } from "./quickjs";
 
@@ -52,6 +52,7 @@ export const makeCloudflareApp = async (env: CloudflareEnv) => {
     plugins,
     providers: {
       identity: identityLayer,
+      mcp: { auth: cloudflareAccessMcpAuth(config) },
       db: dbProviderLayer(Effect.succeed(dbHandle)),
       engine: { codeExecutor: CloudflareCodeExecutorProvider },
       plugins: {

@@ -56,7 +56,7 @@ git push origin HEAD            # then open a PR
 The script finishes by absorbing `main` with `git merge -s ours`, which keeps
 the rebased tree verbatim and records `main` as a parent. That step is not
 cosmetic: rebasing rewrites our config commits, and earlier syncs also replayed
-upstream's own commits, so `main` carries dozens of rebased *copies* of upstream
+upstream's own commits, so `main` carries dozens of rebased _copies_ of upstream
 work. Git sees two lineages holding the same changes and conflicts on upstream
 files we never touched — 85 of them on the 2026-08-19 sync. Since `main` cannot
 be force-pushed, the branch absorbs it instead.
