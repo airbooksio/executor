@@ -1,4 +1,5 @@
 import type { D1Database, DurableObjectNamespace, R2Bucket } from "@cloudflare/workers-types";
+import { Option, Schema } from "effect";
 
 import { isValidOrgSlug } from "@executor-js/api";
 import { missingPublicOriginWarning, resolvePublicOrigin } from "@executor-js/sdk/public-origin";
@@ -40,6 +41,8 @@ export interface CloudflareEnv {
   readonly ACCESS_GROUPS_CLAIM?: string;
   /** Comma-separated emails granted the admin role. */
   readonly ADMIN_EMAILS?: string;
+  /** JSON object mapping service-token `common_name` values to human Access `sub` values. */
+  readonly ACCESS_SERVICE_TOKEN_SUBJECTS?: string;
   /** The single organization id/name every authenticated user belongs to. */
   readonly SELF_HOSTED_ORG_ID?: string;
   readonly SELF_HOSTED_ORG_NAME?: string;
@@ -64,6 +67,7 @@ export interface CloudflareConfig {
   readonly accessNameClaim: string;
   readonly accessGroupsClaim: string;
   readonly adminEmails: readonly string[];
+  readonly accessServiceTokenSubjects: Readonly<Record<string, string>>;
   readonly organizationId: string;
   readonly organizationName: string;
   /** URL slug for org-prefixed console paths (`/<slug>/policies`). */
@@ -91,6 +95,39 @@ const splitLower = (value: string | undefined): readonly string[] =>
     .split(",")
     .map((part) => part.trim().toLowerCase())
     .filter((part) => part.length > 0);
+
+const decodeServiceTokenSubjects = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Record(Schema.String, Schema.Unknown)),
+);
+
+const parseServiceTokenSubjects = (value: string | undefined): Readonly<Record<string, string>> => {
+  const source = (value ?? "").trim();
+  if (source.length === 0) return {};
+
+  const decoded = decodeServiceTokenSubjects(source);
+  if (Option.isNone(decoded)) {
+    // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: an invalid identity map must fail closed at boot
+    throw new Error(
+      "ACCESS_SERVICE_TOKEN_SUBJECTS must be a JSON object mapping service-token Client IDs to human Access user_uuid values",
+    );
+  }
+
+  const seenCommonNames = new Set<string>();
+  return Object.fromEntries(
+    Object.entries(decoded.value).map(([rawCommonName, rawSubject]) => {
+      const commonName = rawCommonName.trim().toLowerCase();
+      const subject = typeof rawSubject === "string" ? rawSubject.trim() : "";
+      if (commonName.length === 0 || subject.length === 0 || seenCommonNames.has(commonName)) {
+        // oxlint-disable-next-line executor/no-try-catch-or-throw, executor/no-error-constructor -- boundary: an invalid identity map must fail closed at boot
+        throw new Error(
+          "ACCESS_SERVICE_TOKEN_SUBJECTS must contain unique non-empty service-token Client ID keys and non-empty human Access user_uuid string values",
+        );
+      }
+      seenCommonNames.add(commonName);
+      return [commonName, subject];
+    }),
+  );
+};
 
 const normalizeAccessTeamDomain = (value: string | undefined): string =>
   (value ?? "")
@@ -161,6 +198,7 @@ export const loadConfig = (env: CloudflareConfigEnv): CloudflareConfig => {
     accessNameClaim: env.ACCESS_NAME_CLAIM ?? "name",
     accessGroupsClaim: env.ACCESS_GROUPS_CLAIM ?? "groups",
     adminEmails: splitLower(env.ADMIN_EMAILS),
+    accessServiceTokenSubjects: parseServiceTokenSubjects(env.ACCESS_SERVICE_TOKEN_SUBJECTS),
     organizationId: env.SELF_HOSTED_ORG_ID ?? "default",
     organizationName: env.SELF_HOSTED_ORG_NAME ?? "Default",
     organizationSlug: resolveOrgSlug(env.SELF_HOSTED_ORG_SLUG),

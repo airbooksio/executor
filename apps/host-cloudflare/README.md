@@ -64,6 +64,32 @@ The Access values are live Worker variables, not values in `wrangler.jsonc`.
 Wrangler's `keep_vars` option preserves them during later code deploys. Run the
 command above again whenever you need to change them.
 
+### Let a service token use one human's personal connections
+
+Cloudflare service-token JWTs have a `common_name` but no human `sub` or email,
+so Executor treats them as separate accounts by default. To let one dedicated
+MCP token use the same personal connections as a human login, map that token's
+`common_name` to the human Access JWT's stable `sub`:
+
+```json
+{
+  "<service-token-client-id>.access": "<human-access-user_uuid>"
+}
+```
+
+The mapping changes only the account that owns user-scoped data. A service
+token always remains a `member`; it never inherits the human's email, admin
+role, or group claims. Treat the service-token secret as a bearer credential
+with access to that human's personal connections.
+
+Read `user_uuid` from
+`https://<executor-host>/cdn-cgi/access/get-identity` while signed in as that
+user. It is the human `sub` in the verified Access JWT. The service-token Client
+ID is the JWT's `common_name`. Add one JSON property per person and provide the
+complete object whenever the Worker variable changes. Invalid JSON, empty
+values, non-string UUIDs, and duplicate token IDs after case normalization are
+rejected at startup.
+
 ## Local development
 
 ```bash
