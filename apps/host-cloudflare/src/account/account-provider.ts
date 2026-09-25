@@ -16,11 +16,9 @@ import type { CloudflareConfig } from "../config";
 // reflects the Access principal (the same `makeAccessVerifier` the API gate
 // uses), reading the `Cf-Access-Jwt-Assertion` header off the request.
 //
-// Single-tenant + Access-managed: members, roles, and API keys live in
-// Cloudflare Access, NOT in the app. The shell hides the API-keys footer and
-// shows no members page, so those methods are never reached from the UI; they
-// return empty (reads) or a clear "managed by Cloudflare Access" error (writes)
-// to satisfy the provider shape.
+// Access owns the directory; expose only the authenticated membership so the
+// shared console can derive admin capabilities from `/account/members`.
+// API keys and directory writes remain managed outside the app.
 // ---------------------------------------------------------------------------
 
 const NOT_IN_APP = "Managed by Cloudflare Access, not in the app.";
@@ -66,7 +64,28 @@ export const cloudflareAccountProvider = (
     listOrgApiKeys: () => Effect.succeed({ apiKeys: [] }),
     createOrgApiKey: () => forbiddenWrite,
     revokeOrgApiKey: () => forbiddenWrite,
-    listMembers: () => Effect.succeed({ members: [] }),
+    listMembers: (headers) =>
+      principalFrom(headers).pipe(
+        Effect.flatMap((principal) =>
+          principal
+            ? Effect.succeed({
+                members: [
+                  {
+                    id: principal.accountId,
+                    userId: principal.accountId,
+                    email: principal.email || null,
+                    name: principal.name,
+                    avatarUrl: principal.avatarUrl,
+                    role: principal.orgRole === "admin" ? "admin" : "member",
+                    status: "active",
+                    lastActiveAt: null,
+                    isCurrentUser: true,
+                  },
+                ],
+              })
+            : Effect.fail(new AccountUnauthorized()),
+        ),
+      ),
     listRoles: () => Effect.succeed({ roles: [] }),
     inviteMember: () => forbiddenWrite,
     removeMember: () => forbiddenWrite,
