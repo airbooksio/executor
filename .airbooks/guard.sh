@@ -52,6 +52,9 @@ grep -qE '"(ACCESS_AUD|ACCESS_TEAM_DOMAIN|ADMIN_EMAILS)"[[:space:]]*:' "$config"
 grep -qF '"keep_vars": true' "$config" \
   || fail "$config must keep keep_vars enabled or a deploy will drop the live Access variables"
 
+grep -qE '"compatibility_flags".*"global_fetch_strictly_public"' "$config" \
+  || fail "$config must route outbound fetches through the public edge, including same-zone Worker routes"
+
 grep -qF 'doppler secrets get ACCESS_SERVICE_TOKEN_SUBJECTS' "$deploy_script" \
   || fail "$deploy_script must load the service-token subject map from Doppler"
 
