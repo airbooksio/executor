@@ -43,6 +43,11 @@ export const bootCloudflare = async (options: CloudflareBootOptions): Promise<Bo
           String(options.port),
           "--ip",
           "127.0.0.1",
+          // Keep request URLs local even when wrangler.jsonc has a custom domain.
+          "--local-upstream",
+          `127.0.0.1:${options.port}`,
+          "--upstream-protocol",
+          "http",
           "--var",
           "ENABLE_DEV_AUTH:true",
           "--var",
