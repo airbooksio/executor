@@ -2,7 +2,9 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "executor-cloudflare",
   "compatibility_date": "2025-04-01",
-  "compatibility_flags": ["nodejs_compat"],
+  // Outbound requests must pass through public edge routing and authentication,
+  // including when the destination shares this Worker's zone.
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "main": "src/worker.ts",
   // Serve on the Terraform-governed hostname; the Access application in
   // omega-network-infrastructure (executor/ root) gates this domain.
