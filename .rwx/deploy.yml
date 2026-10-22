@@ -99,7 +99,7 @@ tasks:
   - key: node
     call: nodejs/install 1.1.15
     with:
-      node-version: "24.11.0"
+      node-version: "24.22.1"
 
   - key: doppler-cli
     use: code
